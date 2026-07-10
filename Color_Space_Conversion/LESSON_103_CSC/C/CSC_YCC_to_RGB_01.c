@@ -37,6 +37,7 @@ static void chrominance_array_upsample( void);
 #include <stdio.h>
 #pragma message("NEON code enabled")
 static void CSC_YCC_to_RGB_neon_4px(
+  printf("NEON YCC->RGB function called\n");
     const uint8_t *y, const uint8_t *cb, const uint8_t *cr,
     uint8_t *r, uint8_t *g, uint8_t *b) {
   int32_t y_vals[4] = {y[0], y[1], y[2], y[3]};
