@@ -38,7 +38,6 @@ static void chrominance_array_upsample( void);
 static void CSC_YCC_to_RGB_neon_4px(
     const uint8_t *y, const uint8_t *cb, const uint8_t *cr,
     uint8_t *r, uint8_t *g, uint8_t *b) {
-      printf("NEON YCC->RGB function called\n");
   int32_t y_vals[4] = {y[0], y[1], y[2], y[3]};
   int32_t cb_vals[4] = {cb[0], cb[1], cb[2], cb[3]};
   int32_t cr_vals[4] = {cr[0], cr[1], cr[2], cr[3]};
@@ -466,7 +465,7 @@ static void chrominance_array_upsample( void) {
   }
 
   row = (IMAGE_ROW_SIZE>>1) - 1;
-  for( col=0; row<((IMAGE_COL_SIZE>>1)-1); col+=1) {
+  for( col=0; col<((IMAGE_COL_SIZE>>1)-1); col+=1) {
     chrominance_upsample( Cb[row][col+0], Cb[row][col+1],
                           Cb[row][col+0], Cb[row][col+1],
                           &top, &left, &middle);
