@@ -304,6 +304,7 @@ static uint8_t saturate_to_u8( int value) {
 
 // =======
 static void CSC_YCC_to_RGB_optimized( int row, int col) {
+  printf("CSC_YCC_to_RGB optimized is reached\n")
   int y00 = (int)Y[row+0][col+0] - 16;
   int y01 = (int)Y[row+0][col+1] - 16;
   int y10 = (int)Y[row+1][col+0] - 16;
@@ -320,9 +321,10 @@ static void CSC_YCC_to_RGB_optimized( int row, int col) {
   int cr01 = (int)Cr_temp[row+0][col+1] - 128;
   int cr10 = (int)Cr_temp[row+1][col+0] - 128;
   int cr11 = (int)Cr_temp[row+1][col+1] - 128;
-
+  printf("initial setup is done\n")
 #if defined(__ARM_NEON) || defined(__ARM_NEON__)
   {
+    printf("NEON is used\n")
     uint8_t y_block[4] = { (uint8_t)(y00 + 16), (uint8_t)(y01 + 16), (uint8_t)(y10 + 16), (uint8_t)(y11 + 16) };
     uint8_t cb_block[4] = { (uint8_t)(cb00 + 128), (uint8_t)(cb01 + 128), (uint8_t)(cb10 + 128), (uint8_t)(cb11 + 128) };
     uint8_t cr_block[4] = { (uint8_t)(cr00 + 128), (uint8_t)(cr01 + 128), (uint8_t)(cr10 + 128), (uint8_t)(cr11 + 128) };
@@ -344,6 +346,7 @@ static void CSC_YCC_to_RGB_optimized( int row, int col) {
     return;
   }
 #else
+  printf("NEON is not used\n")
   int r00 = (D1 * y00 + D2 * cr00 + CSC_ROUNDING) >> CSC_FIXED_POINT_SHIFT;
   int r01 = (D1 * y01 + D2 * cr01 + CSC_ROUNDING) >> CSC_FIXED_POINT_SHIFT;
   int r10 = (D1 * y10 + D2 * cr10 + CSC_ROUNDING) >> CSC_FIXED_POINT_SHIFT;
