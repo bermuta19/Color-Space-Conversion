@@ -265,7 +265,7 @@ static void CSC_RGB_to_YCC_optimized( int row, int col) {
   const int bias_ch = 128 << CSC_FIXED_POINT_SHIFT;
   const int round = 1 << (CSC_FIXED_POINT_SHIFT - 1);
 
-#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+#if CSC_USE_NEON && (defined(__ARM_NEON) || defined(__ARM_NEON__))
   {
     uint8_t y_block[4];
     uint8_t cb_block[4];
