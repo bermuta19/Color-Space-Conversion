@@ -47,10 +47,12 @@ static void CSC_YCC_to_RGB_neon_4px(
   int32x4_t cb_vec = vld1q_s32(cb_vals);
   int32x4_t cr_vec = vld1q_s32(cr_vals);
   int32x4_t round = vdupq_n_s32(1 << (CSC_FIXED_POINT_SHIFT - 1));
+  int32x4_t bias_y = vdupq_n_s32(16);
+  int32x4_t bias_cb = vdupq_n_s32(128);
 
-  yy = vsubq_n_s32(yy, 16);
-  cb_vec = vsubq_n_s32(cb_vec, 128);
-  cr_vec = vsubq_n_s32(cr_vec, 128);
+  yy = vsubq_s32(yy, bias_y);
+  cb_vec = vsubq_s32(cb_vec, bias_cb);
+  cr_vec = vsubq_s32(cr_vec, bias_cb);
 
   int32x4_t rr = vaddq_s32(vmulq_n_s32(yy, D1), vmulq_n_s32(cr_vec, D2));
   rr = vaddq_s32(rr, round);
