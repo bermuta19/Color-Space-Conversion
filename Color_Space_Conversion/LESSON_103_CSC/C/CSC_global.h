@@ -1,19 +1,33 @@
 #include <stdint.h>
 
+#ifndef K
 #define K 8 // bitwidth
+#endif
+#ifndef UNITY
 #define UNITY (1 << K)
-#define IMAGE_ROW_SIZE 64
-#define IMAGE_COL_SIZE 48
+#endif
+#ifndef IMAGE_ROW_SIZE
+#define IMAGE_ROW_SIZE 640
+#endif
+#ifndef IMAGE_COL_SIZE
+#define IMAGE_COL_SIZE 480
+#endif
+#ifndef CSC_FIXED_POINT_SHIFT
+#define CSC_FIXED_POINT_SHIFT K
+#endif
+#define CSC_ROUNDING (1u << (CSC_FIXED_POINT_SHIFT - 1))
 
 // RGB_to_YCC_ROUTINE
 //     1 for CSC_RGB_to_YCC_brute_force_float()
 //     2 for CSC_RGB_to_YCC_brute_force_int()
-#define RGB_to_YCC_ROUTINE 1
+//     3 for CSC_RGB_to_YCC_optimized()
+#define RGB_to_YCC_ROUTINE 3
 
 // YCC_to_RGB_ROUTINE
 //     1 for CSC_YCC_to_RGB_brute_force_float()
 //     2 for CSC_YCC_to_RGB_brute_force_int()
-#define YCC_to_RGB_ROUTINE 1
+//     3 for CSC_YCC_to_RGB_optimized()
+#define YCC_to_RGB_ROUTINE 3
 
 // CHROMINANCE_DOWNSAMPLING_MODE = 
 //     0 for returning zero (no chrominance)

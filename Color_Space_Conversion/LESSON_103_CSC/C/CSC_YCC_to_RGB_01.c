@@ -4,6 +4,9 @@
 
 //#include <stdio.h>
 #include <stdint.h>
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+#include <arm_neon.h>
+#endif
 #include "CSC_global.h"
 
 // private data
@@ -18,6 +21,9 @@ static uint8_t saturation_int( int argument);
 static void CSC_YCC_to_RGB_brute_force_int( int row, int col);
 
 // =======
+static void CSC_YCC_to_RGB_optimized( int row, int col);
+
+// =======
 static void chrominance_upsample(
     uint8_t C_pixel_1, uint8_t C_pixel_2,
     uint8_t C_pixel_3, uint8_t C_pixel_4,
@@ -27,6 +33,61 @@ static void chrominance_array_upsample( void);
 
 // private definitions
 // =======
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+static void CSC_YCC_to_RGB_neon_4px(
+    const uint8_t *y, const uint8_t *cb, const uint8_t *cr,
+    uint8_t *r, uint8_t *g, uint8_t *b) {
+  int32_t y_vals[4] = {y[0], y[1], y[2], y[3]};
+  int32_t cb_vals[4] = {cb[0], cb[1], cb[2], cb[3]};
+  int32_t cr_vals[4] = {cr[0], cr[1], cr[2], cr[3]};
+  int32_t r_out[4];
+  int32_t g_out[4];
+  int32_t b_out[4];
+  int32x4_t yy = vld1q_s32(y_vals);
+  int32x4_t cb_vec = vld1q_s32(cb_vals);
+  int32x4_t cr_vec = vld1q_s32(cr_vals);
+  int32x4_t round = vdupq_n_s32(1 << (CSC_FIXED_POINT_SHIFT - 1));
+
+  yy = vsubq_n_s32(yy, 16);
+  cb_vec = vsubq_n_s32(cb_vec, 128);
+  cr_vec = vsubq_n_s32(cr_vec, 128);
+
+  int32x4_t rr = vaddq_s32(vmulq_n_s32(yy, D1), vmulq_n_s32(cr_vec, D2));
+  rr = vaddq_s32(rr, round);
+  rr = vshrq_n_s32(rr, CSC_FIXED_POINT_SHIFT);
+  vst1q_s32(r_out, rr);
+
+  int32x4_t gg = vmulq_n_s32(yy, D1);
+  gg = vmlaq_n_s32(gg, cr_vec, -D3);
+  gg = vmlaq_n_s32(gg, cb_vec, -D4);
+  gg = vaddq_s32(gg, round);
+  gg = vshrq_n_s32(gg, CSC_FIXED_POINT_SHIFT);
+  vst1q_s32(g_out, gg);
+
+  int32x4_t bb = vaddq_s32(vmulq_n_s32(yy, D1), vmulq_n_s32(cb_vec, D5));
+  bb = vaddq_s32(bb, round);
+  bb = vshrq_n_s32(bb, CSC_FIXED_POINT_SHIFT);
+  vst1q_s32(b_out, bb);
+
+  for( int i = 0; i < 4; ++i) {
+    int v = r_out[i];
+    if( v < 0) v = 0;
+    else if( v > 255) v = 255;
+    r[i] = (uint8_t)v;
+
+    v = g_out[i];
+    if( v < 0) v = 0;
+    else if( v > 255) v = 255;
+    g[i] = (uint8_t)v;
+
+    v = b_out[i];
+    if( v < 0) v = 0;
+    else if( v > 255) v = 255;
+    b[i] = (uint8_t)v;
+  }
+}
+#endif
+
 static uint8_t saturation_float( float argument) {
   if( argument > 255.0) { // saturation
     return( (uint8_t)255);
@@ -229,6 +290,91 @@ static void CSC_YCC_to_RGB_brute_force_int( int row, int col) {
 } // END of CSC_YCC_to_RGB_brute_force_int()
 
 // =======
+static uint8_t saturate_to_u8( int value) {
+  if( value < 0) {
+    return 0;
+  }
+  if( value > 255) {
+    return 255;
+  }
+  return (uint8_t)value;
+}
+
+// =======
+static void CSC_YCC_to_RGB_optimized( int row, int col) {
+  int y00 = (int)Y[row+0][col+0] - 16;
+  int y01 = (int)Y[row+0][col+1] - 16;
+  int y10 = (int)Y[row+1][col+0] - 16;
+  int y11 = (int)Y[row+1][col+1] - 16;
+
+  chrominance_array_upsample();
+
+  int cb00 = (int)Cb_temp[row+0][col+0] - 128;
+  int cb01 = (int)Cb_temp[row+0][col+1] - 128;
+  int cb10 = (int)Cb_temp[row+1][col+0] - 128;
+  int cb11 = (int)Cb_temp[row+1][col+1] - 128;
+
+  int cr00 = (int)Cr_temp[row+0][col+0] - 128;
+  int cr01 = (int)Cr_temp[row+0][col+1] - 128;
+  int cr10 = (int)Cr_temp[row+1][col+0] - 128;
+  int cr11 = (int)Cr_temp[row+1][col+1] - 128;
+
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+  {
+    uint8_t y_block[4] = { (uint8_t)(y00 + 16), (uint8_t)(y01 + 16), (uint8_t)(y10 + 16), (uint8_t)(y11 + 16) };
+    uint8_t cb_block[4] = { (uint8_t)(cb00 + 128), (uint8_t)(cb01 + 128), (uint8_t)(cb10 + 128), (uint8_t)(cb11 + 128) };
+    uint8_t cr_block[4] = { (uint8_t)(cr00 + 128), (uint8_t)(cr01 + 128), (uint8_t)(cr10 + 128), (uint8_t)(cr11 + 128) };
+    uint8_t r_block[4], g_block[4], b_block[4];
+
+    CSC_YCC_to_RGB_neon_4px( y_block, cb_block, cr_block, r_block, g_block, b_block);
+    R[row+0][col+0] = r_block[0];
+    R[row+0][col+1] = r_block[1];
+    R[row+1][col+0] = r_block[2];
+    R[row+1][col+1] = r_block[3];
+    G[row+0][col+0] = g_block[0];
+    G[row+0][col+1] = g_block[1];
+    G[row+1][col+0] = g_block[2];
+    G[row+1][col+1] = g_block[3];
+    B[row+0][col+0] = b_block[0];
+    B[row+0][col+1] = b_block[1];
+    B[row+1][col+0] = b_block[2];
+    B[row+1][col+1] = b_block[3];
+    return;
+  }
+#else
+  int r00 = (D1 * y00 + D2 * cr00 + CSC_ROUNDING) >> CSC_FIXED_POINT_SHIFT;
+  int r01 = (D1 * y01 + D2 * cr01 + CSC_ROUNDING) >> CSC_FIXED_POINT_SHIFT;
+  int r10 = (D1 * y10 + D2 * cr10 + CSC_ROUNDING) >> CSC_FIXED_POINT_SHIFT;
+  int r11 = (D1 * y11 + D2 * cr11 + CSC_ROUNDING) >> CSC_FIXED_POINT_SHIFT;
+
+  int g00 = (D1 * y00 - D3 * cr00 - D4 * cb00 + CSC_ROUNDING) >> CSC_FIXED_POINT_SHIFT;
+  int g01 = (D1 * y01 - D3 * cr01 - D4 * cb01 + CSC_ROUNDING) >> CSC_FIXED_POINT_SHIFT;
+  int g10 = (D1 * y10 - D3 * cr10 - D4 * cb10 + CSC_ROUNDING) >> CSC_FIXED_POINT_SHIFT;
+  int g11 = (D1 * y11 - D3 * cr11 - D4 * cb11 + CSC_ROUNDING) >> CSC_FIXED_POINT_SHIFT;
+
+  int b00 = (D1 * y00 + D5 * cb00 + CSC_ROUNDING) >> CSC_FIXED_POINT_SHIFT;
+  int b01 = (D1 * y01 + D5 * cb01 + CSC_ROUNDING) >> CSC_FIXED_POINT_SHIFT;
+  int b10 = (D1 * y10 + D5 * cb10 + CSC_ROUNDING) >> CSC_FIXED_POINT_SHIFT;
+  int b11 = (D1 * y11 + D5 * cb11 + CSC_ROUNDING) >> CSC_FIXED_POINT_SHIFT;
+
+  R[row+0][col+0] = saturate_to_u8(r00);
+  R[row+0][col+1] = saturate_to_u8(r01);
+  R[row+1][col+0] = saturate_to_u8(r10);
+  R[row+1][col+1] = saturate_to_u8(r11);
+
+  G[row+0][col+0] = saturate_to_u8(g00);
+  G[row+0][col+1] = saturate_to_u8(g01);
+  G[row+1][col+0] = saturate_to_u8(g10);
+  G[row+1][col+1] = saturate_to_u8(g11);
+
+  B[row+0][col+0] = saturate_to_u8(b00);
+  B[row+0][col+1] = saturate_to_u8(b01);
+  B[row+1][col+0] = saturate_to_u8(b10);
+  B[row+1][col+1] = saturate_to_u8(b11);
+#endif
+}
+
+// =======
 static void chrominance_upsample(
     uint8_t C_pixel_00, uint8_t C_pixel_01,
     uint8_t C_pixel_10, uint8_t C_pixel_11,
@@ -363,6 +509,9 @@ void CSC_YCC_to_RGB( void) {
           break;
         case 2:
           CSC_YCC_to_RGB_brute_force_int( row, col);
+          break;
+        case 3:
+          CSC_YCC_to_RGB_optimized( row, col);
           break;
         default:
           break;

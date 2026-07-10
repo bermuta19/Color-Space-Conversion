@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <time.h>
 //#include <string.h>
 #include <math.h>
 
@@ -13,6 +14,9 @@
 
 int main( void) {
   int row, col;
+  int benchmark_rounds = 1;
+  int run;
+  clock_t start, finish;
   FILE *f_ID_input_RGB;
   FILE *f_ID_echo_R;
   FILE *f_ID_echo_G;
@@ -22,25 +26,32 @@ int main( void) {
   FILE *f_ID_output_Cr;
   FILE *f_ID_output_RGB;
 
-  f_ID_input_RGB = fopen( "./image_input_RGB_64_48_03.data", "rb");
+  if( getenv( "CSC_BENCHMARK_ROUNDS") != NULL) {
+    benchmark_rounds = atoi( getenv( "CSC_BENCHMARK_ROUNDS"));
+  }
+  if( benchmark_rounds < 1) {
+    benchmark_rounds = 1;
+  }
+
+  f_ID_input_RGB = fopen( "./image_input_RGB_640_480_02.data", "rb");
   if( f_ID_input_RGB == NULL) {
     printf( "Cannot open file.\n");
     return( 1);
   }
 
-  f_ID_echo_R = fopen( "./image_echo_R_64_48_03.data", "wb");
+  f_ID_echo_R = fopen( "./image_echo_R_640_480_02.data", "wb");
   if( f_ID_echo_R == NULL) {
     printf( "Cannot open file.\n");
     return( 1);
   }
 
-  f_ID_echo_G = fopen( "./image_echo_G_64_48_03.data", "wb");
+  f_ID_echo_G = fopen( "./image_echo_G_640_480_02.data", "wb");
   if( f_ID_echo_G == NULL) {
     printf( "Cannot open file.\n");
     return( 1);
   }
 
-  f_ID_echo_B = fopen( "./image_echo_B_64_48_03.data", "wb");
+  f_ID_echo_B = fopen( "./image_echo_B_640_480_02.data", "wb");
   if( f_ID_echo_B == NULL) {
     printf( "Cannot open file.\n");
     return( 1);
@@ -62,23 +73,31 @@ int main( void) {
   fclose( f_ID_echo_R);
   fclose( f_ID_input_RGB);
 
-  CSC_RGB_to_YCC();
+  start = clock();
+  for( run = 0; run < benchmark_rounds; ++run) {
+    CSC_RGB_to_YCC();
+    CSC_YCC_to_RGB();
+  }
+  finish = clock();
+  printf( "CSC benchmark: %d rounds, %.3f seconds\n",
+          benchmark_rounds,
+          (double)(finish - start) / CLOCKS_PER_SEC);
 
-  f_ID_output_Y = fopen( "./image_output_Y_64_48_03.data", "wb");
+  f_ID_output_Y = fopen( "./image_output_Y_640_480_02.data", "wb");
   if( f_ID_output_Y == NULL) {
     fprintf( stderr, "Could not open %s\n", 
              "./image_output_Y_64_48_03.data");
     return( 1);
   }
   
-  f_ID_output_Cb = fopen( "./image_output_Cb_64_48_03.data", "wb");
+  f_ID_output_Cb = fopen( "./image_output_Cb_640_480_02.data", "wb");
   if( f_ID_output_Cb == NULL) {
     fprintf( stderr, "Could not open %s\n", 
              "./image_output_Cb_64_48_03.data");
     return( 1);
   }
   
-  f_ID_output_Cr = fopen( "./image_output_Cr_64_48_03.data", "wb");
+  f_ID_output_Cr = fopen( "./image_output_Cr_640_480_02.data", "wb");
   if( f_ID_output_Cr == NULL) {
     fprintf( stderr, "Could not open %s\n", 
              "./image_output_Cr_64_48_03.data");
@@ -103,9 +122,7 @@ int main( void) {
   fclose( f_ID_output_Cb);
   fclose( f_ID_output_Y);
 
-  CSC_YCC_to_RGB();
-
-  f_ID_output_RGB = fopen( "./image_output_RGB_64_48_03.data", "wb");
+  f_ID_output_RGB = fopen( "./image_output_RGB_640_480_02.data", "wb");
   if( f_ID_output_RGB == NULL) {
     printf( "Cannot open file.\n");
     return( 1);
