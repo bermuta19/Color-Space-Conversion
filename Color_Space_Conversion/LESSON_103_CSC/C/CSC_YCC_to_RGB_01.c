@@ -321,7 +321,7 @@ static void CSC_YCC_to_RGB_optimized( int row, int col) {
   int cr01 = (int)Cr_temp[row+0][col+1] - 128;
   int cr10 = (int)Cr_temp[row+1][col+0] - 128;
   int cr11 = (int)Cr_temp[row+1][col+1] - 128;
-  printf("initial setup is done\n")
+  printf("initial setup is done\n");
 #if defined(__ARM_NEON) || defined(__ARM_NEON__)
   {
     printf("NEON is used\n");
