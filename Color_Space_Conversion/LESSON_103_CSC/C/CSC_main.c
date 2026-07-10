@@ -152,9 +152,9 @@ int main( void) {
   start = clock();
   for( run = 0; run < benchmark_rounds; ++run) {
     CSC_RGB_to_YCC();
-    print( "CSC_RGB_to_YCC() completed\n");
+    printf( "CSC_RGB_to_YCC() completed\n");
     CSC_YCC_to_RGB();
-    print( "CSC_YCC_to_RGB() completed\n");
+    printf( "CSC_YCC_to_RGB() completed\n");
   }
   finish = clock();
   printf( "CSC benchmark: %d rounds, %.3f seconds\n",
