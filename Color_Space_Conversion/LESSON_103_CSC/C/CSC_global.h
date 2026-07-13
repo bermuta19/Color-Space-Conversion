@@ -30,7 +30,7 @@
 //     1 for CSC_YCC_to_RGB_brute_force_float()
 //     2 for CSC_YCC_to_RGB_brute_force_int()
 //     3 for CSC_YCC_to_RGB_optimized()
-#define YCC_to_RGB_ROUTINE 1
+#define YCC_to_RGB_ROUTINE 3
 
 // CHROMINANCE_DOWNSAMPLING_MODE = 
 //     0 for returning zero (no chrominance)
@@ -56,11 +56,11 @@
 #define C33  18
 
 // YCC-to-RGB coefficients in 8-bit representation
-#define D1  74
-#define D2 102
-#define D3  52
-#define D4  25
-#define D5 129
+#define D1 298   // 1.164 * 256
+#define D2 409   // 1.596 * 256
+#define D3 208   // 0.813 * 256
+#define D4 100   // 0.391 * 256
+#define D5 516   // 2.018 * 256
 
 /* choose between definition (GLOBAL is defined)      *
  * and declaration (GLOBAL is undefined)              *
