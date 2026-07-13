@@ -24,13 +24,13 @@
 //     1 for CSC_RGB_to_YCC_brute_force_float()
 //     2 for CSC_RGB_to_YCC_brute_force_int()
 //     3 for CSC_RGB_to_YCC_optimized()
-#define RGB_to_YCC_ROUTINE 1
+#define RGB_to_YCC_ROUTINE 3
 
 // YCC_to_RGB_ROUTINE
 //     1 for CSC_YCC_to_RGB_brute_force_float()
 //     2 for CSC_YCC_to_RGB_brute_force_int()
 //     3 for CSC_YCC_to_RGB_optimized()
-#define YCC_to_RGB_ROUTINE 3
+#define YCC_to_RGB_ROUTINE 1
 
 // CHROMINANCE_DOWNSAMPLING_MODE = 
 //     0 for returning zero (no chrominance)
