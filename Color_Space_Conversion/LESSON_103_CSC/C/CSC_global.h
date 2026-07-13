@@ -16,7 +16,7 @@
 #define CSC_FIXED_POINT_SHIFT K
 #endif
 #ifndef CSC_USE_NEON
-#define CSC_USE_NEON 0
+#define CSC_USE_NEON 1
 #endif
 #define CSC_ROUNDING (1u << (CSC_FIXED_POINT_SHIFT - 1))
 
