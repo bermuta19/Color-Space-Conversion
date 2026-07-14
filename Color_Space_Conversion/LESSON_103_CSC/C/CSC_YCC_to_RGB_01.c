@@ -310,8 +310,6 @@ static void CSC_YCC_to_RGB_optimized( int row, int col) {
   int y10 = (int)Y[row+1][col+0] - 16;
   int y11 = (int)Y[row+1][col+1] - 16;
 
-  chrominance_array_upsample();
-
   int cb00 = (int)Cb_temp[row+0][col+0] - 128;
   int cb01 = (int)Cb_temp[row+0][col+1] - 128;
   int cb10 = (int)Cb_temp[row+1][col+0] - 128;
@@ -501,6 +499,10 @@ static void chrominance_array_upsample( void) {
 void CSC_YCC_to_RGB( void) {
   int row, col; // indices for row and column
 //
+  if( YCC_to_RGB_ROUTINE == 3) {
+    chrominance_array_upsample();
+  }
+
  for( row=0; row<IMAGE_ROW_SIZE; row+=2) {
     for( col=0; col<IMAGE_COL_SIZE; col+=2) { 
       //printf( "\n[row,col] = [%02i,%02i]\n\n", row, col);

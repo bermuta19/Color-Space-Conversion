@@ -19,7 +19,11 @@ static void CSC_RGB_to_YCC_brute_force_float( int row, int col);
 static void CSC_RGB_to_YCC_brute_force_int( int row, int col);
 
 // =======
-static void CSC_RGB_to_YCC_optimized( int row, int col);
+static void CSC_RGB_to_YCC_optimized(
+    int row, int col,
+    int *out_y0, int *out_y1, int *out_y2, int *out_y3,
+    int *out_cb0, int *out_cb1, int *out_cb2, int *out_cb3,
+    int *out_cr0, int *out_cr1, int *out_cr2, int *out_cr3);
 
 // =======
 static uint8_t chrominance_downsample(
@@ -247,7 +251,11 @@ static void CSC_RGB_to_YCC_brute_force_int( int row, int col) {
 } // END of CSC_RGB_to_YCC_brute_force_int()
 
 // =======
-static void CSC_RGB_to_YCC_optimized( int row, int col) {
+static void CSC_RGB_to_YCC_optimized(
+    int row, int col,
+    int *out_y0, int *out_y1, int *out_y2, int *out_y3,
+    int *out_cb0, int *out_cb1, int *out_cb2, int *out_cb3,
+    int *out_cr0, int *out_cr1, int *out_cr2, int *out_cr3) {
   const int r0 = (int)R[row+0][col+0];
   const int r1 = (int)R[row+0][col+1];
   const int r2 = (int)R[row+1][col+0];
@@ -275,12 +283,18 @@ static void CSC_RGB_to_YCC_optimized( int row, int col) {
     const uint8_t b_block[4] = { (uint8_t)b0, (uint8_t)b1, (uint8_t)b2, (uint8_t)b3 };
 
     CSC_RGB_to_YCC_neon_4px( r_block, g_block, b_block, y_block, cb_block, cr_block);
-    Y[row+0][col+0] = y_block[0];
-    Y[row+0][col+1] = y_block[1];
-    Y[row+1][col+0] = y_block[2];
-    Y[row+1][col+1] = y_block[3];
-    Cb[row>>1][col>>1] = chrominance_downsample( cb_block[0], cb_block[1], cb_block[2], cb_block[3]);
-    Cr[row>>1][col>>1] = chrominance_downsample( cr_block[0], cr_block[1], cr_block[2], cr_block[3]);
+    *out_y0 = y_block[0];
+    *out_y1 = y_block[1];
+    *out_y2 = y_block[2];
+    *out_y3 = y_block[3];
+    *out_cb0 = cb_block[0];
+    *out_cb1 = cb_block[1];
+    *out_cb2 = cb_block[2];
+    *out_cb3 = cb_block[3];
+    *out_cr0 = cr_block[0];
+    *out_cr1 = cr_block[1];
+    *out_cr2 = cr_block[2];
+    *out_cr3 = cr_block[3];
     return;
   }
 #else
@@ -311,15 +325,18 @@ static void CSC_RGB_to_YCC_optimized( int row, int col) {
   cr2 >>= CSC_FIXED_POINT_SHIFT;
   cr3 >>= CSC_FIXED_POINT_SHIFT;
 
-  Y[row+0][col+0] = (uint8_t)y0;
-  Y[row+0][col+1] = (uint8_t)y1;
-  Y[row+1][col+0] = (uint8_t)y2;
-  Y[row+1][col+1] = (uint8_t)y3;
-
-  Cb[row>>1][col>>1] = chrominance_downsample((uint8_t)cb0, (uint8_t)cb1,
-                                               (uint8_t)cb2, (uint8_t)cb3);
-  Cr[row>>1][col>>1] = chrominance_downsample((uint8_t)cr0, (uint8_t)cr1,
-                                               (uint8_t)cr2, (uint8_t)cr3);
+  *out_y0 = y0;
+  *out_y1 = y1;
+  *out_y2 = y2;
+  *out_y3 = y3;
+  *out_cb0 = cb0;
+  *out_cb1 = cb1;
+  *out_cb2 = cb2;
+  *out_cb3 = cb3;
+  *out_cr0 = cr0;
+  *out_cr1 = cr1;
+  *out_cr2 = cr2;
+  *out_cr3 = cr3;
 #endif
 }
 
@@ -362,9 +379,27 @@ void CSC_RGB_to_YCC( void) {
         case 2:
           CSC_RGB_to_YCC_brute_force_int( row, col);
           break;
-        case 3:
-          CSC_RGB_to_YCC_optimized( row, col);
+        case 3: {
+          int y0, y1, y2, y3;
+          int cb0, cb1, cb2, cb3;
+          int cr0, cr1, cr2, cr3;
+
+          CSC_RGB_to_YCC_optimized( row, col,
+                                    &y0, &y1, &y2, &y3,
+                                    &cb0, &cb1, &cb2, &cb3,
+                                    &cr0, &cr1, &cr2, &cr3);
+
+          Y[row+0][col+0] = (uint8_t)y0;
+          Y[row+0][col+1] = (uint8_t)y1;
+          Y[row+1][col+0] = (uint8_t)y2;
+          Y[row+1][col+1] = (uint8_t)y3;
+
+          Cb[row>>1][col>>1] = chrominance_downsample((uint8_t)cb0, (uint8_t)cb1,
+                                                       (uint8_t)cb2, (uint8_t)cb3);
+          Cr[row>>1][col>>1] = chrominance_downsample((uint8_t)cr0, (uint8_t)cr1,
+                                                       (uint8_t)cr2, (uint8_t)cr3);
           break;
+        }
         default:
           break;
       }
