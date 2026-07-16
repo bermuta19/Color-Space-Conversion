@@ -10,8 +10,6 @@
 #include "CSC_global.h"
 
 // private data
-static int csc_ycc_to_rgb_asm_printed = 0;
-static int csc_ycc_to_rgb_scalar_printed = 0;
 
 // private prototypes
 // =======
@@ -36,59 +34,87 @@ static void chrominance_array_upsample( void);
 // private definitions
 // =======
 #if CSC_ENABLE_YCC_TO_RGB_OPTIMIZED && CSC_ENABLE_YCC_TO_RGB_NEON && (defined(__ARM_NEON) || defined(__ARM_NEON__))
-static void CSC_YCC_to_RGB_neon_4px(
-    const uint8_t *y, const uint8_t *cb, const uint8_t *cr,
-    uint8_t *r, uint8_t *g, uint8_t *b) {
-  int32_t y_vals[4] = {y[0], y[1], y[2], y[3]};
-  int32_t cb_vals[4] = {cb[0], cb[1], cb[2], cb[3]};
-  int32_t cr_vals[4] = {cr[0], cr[1], cr[2], cr[3]};
-  int32_t r_out[4];
-  int32_t g_out[4];
-  int32_t b_out[4];
-  int32x4_t yy = vld1q_s32(y_vals);
-  int32x4_t cb_vec = vld1q_s32(cb_vals);
-  int32x4_t cr_vec = vld1q_s32(cr_vals);
-  int32x4_t round = vdupq_n_s32(1 << (CSC_FIXED_POINT_SHIFT - 1));
-  int32x4_t bias_y = vdupq_n_s32(16);
-  int32x4_t bias_cb = vdupq_n_s32(128);
 
-  yy = vsubq_s32(yy, bias_y);
-  cb_vec = vsubq_s32(cb_vec, bias_cb);
-  cr_vec = vsubq_s32(cr_vec, bias_cb);
+// Processes one full contiguous sub-row of `count` pixels directly out of
+// the image arrays. Real contiguous loads (no gather through a temp array),
+// so this amortizes NEON setup/teardown cost over a whole row instead of a
+// single 2x2 block.
+static void CSC_YCC_to_RGB_neon_subrow(
+    const uint8_t *y_row, const uint8_t *cb_row, const uint8_t *cr_row,
+    uint8_t *r_row, uint8_t *g_row, uint8_t *b_row, int count) {
 
-  int32x4_t rr = vaddq_s32(vmulq_n_s32(yy, D1), vmulq_n_s32(cr_vec, D2));
-  rr = vaddq_s32(rr, round);
-  rr = vshrq_n_s32(rr, CSC_FIXED_POINT_SHIFT);
-  vst1q_s32(r_out, rr);
+  int32x4_t round  = vdupq_n_s32(1 << (CSC_FIXED_POINT_SHIFT - 1));
+  int32x4_t bias_y  = vdupq_n_s32(16);
+  int32x4_t bias_ch = vdupq_n_s32(128);
 
-  int32x4_t gg = vmulq_n_s32(yy, D1);
-  gg = vmlaq_n_s32(gg, cr_vec, -D3);
-  gg = vmlaq_n_s32(gg, cb_vec, -D4);
-  gg = vaddq_s32(gg, round);
-  gg = vshrq_n_s32(gg, CSC_FIXED_POINT_SHIFT);
-  vst1q_s32(g_out, gg);
+  int i = 0;
+  for( ; i + 4 <= count; i += 4) {
+    uint8x8_t y_u8  = vld1_u8( y_row + i);
+    uint8x8_t cb_u8 = vld1_u8( cb_row + i);
+    uint8x8_t cr_u8 = vld1_u8( cr_row + i);
 
-  int32x4_t bb = vaddq_s32(vmulq_n_s32(yy, D1), vmulq_n_s32(cb_vec, D5));
-  bb = vaddq_s32(bb, round);
-  bb = vshrq_n_s32(bb, CSC_FIXED_POINT_SHIFT);
-  vst1q_s32(b_out, bb);
+    int32x4_t yy     = vmovl_s16(vget_low_s16(vreinterpretq_s16_u16(vmovl_u8(y_u8))));
+    int32x4_t cb_vec = vmovl_s16(vget_low_s16(vreinterpretq_s16_u16(vmovl_u8(cb_u8))));
+    int32x4_t cr_vec = vmovl_s16(vget_low_s16(vreinterpretq_s16_u16(vmovl_u8(cr_u8))));
 
-  for( int i = 0; i < 4; ++i) {
-    int v = r_out[i];
-    if( v < 0) v = 0;
-    else if( v > 255) v = 255;
-    r[i] = (uint8_t)v;
+    yy     = vsubq_s32(yy, bias_y);
+    cb_vec = vsubq_s32(cb_vec, bias_ch);
+    cr_vec = vsubq_s32(cr_vec, bias_ch);
 
-    v = g_out[i];
-    if( v < 0) v = 0;
-    else if( v > 255) v = 255;
-    g[i] = (uint8_t)v;
+    int32x4_t rr = vaddq_s32(vmulq_n_s32(yy, D1), vmulq_n_s32(cr_vec, D2));
+    rr = vshrq_n_s32(vaddq_s32(rr, round), CSC_FIXED_POINT_SHIFT);
 
-    v = b_out[i];
-    if( v < 0) v = 0;
-    else if( v > 255) v = 255;
-    b[i] = (uint8_t)v;
+    int32x4_t gg = vmulq_n_s32(yy, D1);
+    gg = vmlaq_n_s32(gg, cr_vec, -D3);
+    gg = vmlaq_n_s32(gg, cb_vec, -D4);
+    gg = vshrq_n_s32(vaddq_s32(gg, round), CSC_FIXED_POINT_SHIFT);
+
+    int32x4_t bb = vaddq_s32(vmulq_n_s32(yy, D1), vmulq_n_s32(cb_vec, D5));
+    bb = vshrq_n_s32(vaddq_s32(bb, round), CSC_FIXED_POINT_SHIFT);
+
+    int32_t r_out[4], g_out[4], b_out[4];
+    vst1q_s32(r_out, rr);
+    vst1q_s32(g_out, gg);
+    vst1q_s32(b_out, bb);
+
+    for( int k = 0; k < 4; ++k) {
+      int v;
+      v = r_out[k]; if( v < 0) v = 0; else if( v > 255) v = 255; r_row[i+k] = (uint8_t)v;
+      v = g_out[k]; if( v < 0) v = 0; else if( v > 255) v = 255; g_row[i+k] = (uint8_t)v;
+      v = b_out[k]; if( v < 0) v = 0; else if( v > 255) v = 255; b_row[i+k] = (uint8_t)v;
+    }
   }
+
+  // Scalar cleanup for any remainder (count not divisible by 4; at most 3 px).
+  for( ; i < count; ++i) {
+    int y  = (int)y_row[i]  - 16;
+    int cb = (int)cb_row[i] - 128;
+    int cr = (int)cr_row[i] - 128;
+
+    int r = D1*y + D2*cr + CSC_ROUNDING;
+    r >>= CSC_FIXED_POINT_SHIFT;
+    int g = D1*y - D3*cr - D4*cb + CSC_ROUNDING;
+    g >>= CSC_FIXED_POINT_SHIFT;
+    int b = D1*y + D5*cb + CSC_ROUNDING;
+    b >>= CSC_FIXED_POINT_SHIFT;
+
+    if( r < 0) r = 0; else if( r > 255) r = 255;
+    if( g < 0) g = 0; else if( g > 255) g = 255;
+    if( b < 0) b = 0; else if( b > 255) b = 255;
+
+    r_row[i] = (uint8_t)r;
+    g_row[i] = (uint8_t)g;
+    b_row[i] = (uint8_t)b;
+  }
+}
+
+// Processes an entire row-pair (row, row+1) in two subrow calls instead of
+// (IMAGE_COL_SIZE / 2) separate 2x2-block calls.
+static void CSC_YCC_to_RGB_optimized_row_neon( int row) {
+  CSC_YCC_to_RGB_neon_subrow( Y[row+0], Cb_temp[row+0], Cr_temp[row+0],
+                               R[row+0], G[row+0], B[row+0], IMAGE_COL_SIZE);
+  CSC_YCC_to_RGB_neon_subrow( Y[row+1], Cb_temp[row+1], Cr_temp[row+1],
+                               R[row+1], G[row+1], B[row+1], IMAGE_COL_SIZE);
 }
 #endif
 
@@ -111,8 +137,8 @@ static void CSC_YCC_to_RGB_brute_force_float( int row, int col) {
   float G_pixel_00, G_pixel_01, G_pixel_10, G_pixel_11;
   float B_pixel_00, B_pixel_01, B_pixel_10, B_pixel_11;
 
-  // Upsample Cb and Cr into Cb_temp and Cr_temp
-  chrominance_array_upsample();
+  // NOTE: chrominance_array_upsample() is now called once per frame by the
+  // CSC_YCC_to_RGB() driver, not per-block here.
 
   R_pixel_00 =   1.164*(Y[row+0][col+0] - 16.0)
                + 1.596*(Cr_temp[row+0][col+0] - 128.0);
@@ -191,7 +217,8 @@ static void CSC_YCC_to_RGB_brute_force_int( int row, int col) {
   int Cb_pixel_00, Cb_pixel_01, Cb_pixel_10, Cb_pixel_11;
   int Cr_pixel_00, Cr_pixel_01, Cr_pixel_10, Cr_pixel_11;
 
-
+  // NOTE: chrominance_array_upsample() is now called once per frame by the
+  // CSC_YCC_to_RGB() driver, not per-block here.
 
   Y_pixel_00 = (int)Y[row+0][col+0];
   Y_pixel_01 = (int)Y[row+0][col+1];
@@ -293,14 +320,44 @@ static void CSC_YCC_to_RGB_brute_force_int( int row, int col) {
 } // END of CSC_YCC_to_RGB_brute_force_int()
 
 // =======
+// Two-operand multiply-accumulate-shift-saturate. Used for the R and B
+// channels, which only ever need Y plus a single chroma term. Splitting
+// this out from the 3-operand version below avoids computing (and, in the
+// assembly path, actually executing) a wasted "+ 0*0" MAC instruction.
+static inline int csc_macc2_shift_sat(
+    int a, int b, int coeff_a, int coeff_b) {
+#if CSC_ENABLE_YCC_TO_RGB_ASM && (defined(__arm__) || defined(__thumb__) || defined(__ARM_ARCH_7A__) || defined(__ARM_ARCH_7R__))
+  int out;
+  __asm__ volatile (
+      "mla %[out], %[a], %[coeff_a], %[round]\n\t"
+      "mla %[out], %[b], %[coeff_b], %[out]\n\t"
+      "asr %[out], %[out], #8\n\t"
+      "usat %[out], #8, %[out]\n\t"
+      : [out] "=&r" (out)
+      : [a] "r" (a), [b] "r" (b),
+        [coeff_a] "r" (coeff_a), [coeff_b] "r" (coeff_b),
+        [round] "r" (CSC_ROUNDING)
+      : "cc");
+  return out;
+#else
+  int tmp = coeff_a * a + coeff_b * b + CSC_ROUNDING;
+  tmp >>= CSC_FIXED_POINT_SHIFT;
+  if( tmp < 0) {
+    return 0;
+  }
+  if( tmp > 255) {
+    return 255;
+  }
+  return tmp;
+#endif
+}
+
+// Three-operand multiply-accumulate-shift-saturate. Used only for the G
+// channel, which genuinely needs Y, Cr, and Cb all at once.
 static inline int csc_macc3_shift_sat(
     int a, int b, int c,
     int coeff_a, int coeff_b, int coeff_c) {
 #if CSC_ENABLE_YCC_TO_RGB_ASM && (defined(__arm__) || defined(__thumb__) || defined(__ARM_ARCH_7A__) || defined(__ARM_ARCH_7R__))
-  if (!csc_ycc_to_rgb_asm_printed) {
-    //fprintf(stderr, "[CSC_YCC_to_RGB] using inline assembly path in csc_macc3_shift_sat\n");
-    csc_ycc_to_rgb_asm_printed = 1;
-  }
   int out;
   __asm__ volatile (
       "mla %[out], %[a], %[coeff_a], %[round]\n\t"
@@ -315,10 +372,6 @@ static inline int csc_macc3_shift_sat(
       : "cc");
   return out;
 #else
-  if (!csc_ycc_to_rgb_scalar_printed) {
-    //fprintf(stderr, "[CSC_YCC_to_RGB] using scalar C path in csc_macc3_shift_sat\n");
-    csc_ycc_to_rgb_scalar_printed = 1;
-  }
   int tmp = coeff_a * a + coeff_b * b + coeff_c * c + CSC_ROUNDING;
   tmp >>= CSC_FIXED_POINT_SHIFT;
   if( tmp < 0) {
@@ -342,6 +395,9 @@ static uint8_t saturate_to_u8( int value) {
 }
 
 // =======
+// Per-2x2-block path. Used directly when NEON is disabled (or unavailable);
+// also used as the ultimate fallback if the optimized path itself is
+// disabled entirely.
 static void CSC_YCC_to_RGB_optimized( int row, int col) {
   int y00 = (int)Y[row+0][col+0] - 16;
   int y01 = (int)Y[row+0][col+1] - 16;
@@ -359,45 +415,20 @@ static void CSC_YCC_to_RGB_optimized( int row, int col) {
   int cr11 = (int)Cr_temp[row+1][col+1] - 128;
 
 #if CSC_ENABLE_YCC_TO_RGB_OPTIMIZED
-#if CSC_ENABLE_YCC_TO_RGB_NEON && (defined(__ARM_NEON) || defined(__ARM_NEON__))
-  {
-    //fprintf(stderr, "[CSC_YCC_to_RGB] using NEON optimized path\n");
-    uint8_t y_block[4] = { (uint8_t)(y00 + 16), (uint8_t)(y01 + 16), (uint8_t)(y10 + 16), (uint8_t)(y11 + 16) };
-    uint8_t cb_block[4] = { (uint8_t)(cb00 + 128), (uint8_t)(cb01 + 128), (uint8_t)(cb10 + 128), (uint8_t)(cb11 + 128) };
-    uint8_t cr_block[4] = { (uint8_t)(cr00 + 128), (uint8_t)(cr01 + 128), (uint8_t)(cr10 + 128), (uint8_t)(cr11 + 128) };
-    uint8_t r_block[4], g_block[4], b_block[4];
-
-    CSC_YCC_to_RGB_neon_4px( y_block, cb_block, cr_block, r_block, g_block, b_block);
-    R[row+0][col+0] = r_block[0];
-    R[row+0][col+1] = r_block[1];
-    R[row+1][col+0] = r_block[2];
-    R[row+1][col+1] = r_block[3];
-    G[row+0][col+0] = g_block[0];
-    G[row+0][col+1] = g_block[1];
-    G[row+1][col+0] = g_block[2];
-    G[row+1][col+1] = g_block[3];
-    B[row+0][col+0] = b_block[0];
-    B[row+0][col+1] = b_block[1];
-    B[row+1][col+0] = b_block[2];
-    B[row+1][col+1] = b_block[3];
-    return;
-  }
-#else
-  //fprintf(stderr, "[CSC_YCC_to_RGB] using scalar optimized path\n");
-  int r00 = csc_macc3_shift_sat( y00, cr00, 0, D1, D2, 0);
-  int r01 = csc_macc3_shift_sat( y01, cr01, 0, D1, D2, 0);
-  int r10 = csc_macc3_shift_sat( y10, cr10, 0, D1, D2, 0);
-  int r11 = csc_macc3_shift_sat( y11, cr11, 0, D1, D2, 0);
+  int r00 = csc_macc2_shift_sat( y00, cr00, D1, D2);
+  int r01 = csc_macc2_shift_sat( y01, cr01, D1, D2);
+  int r10 = csc_macc2_shift_sat( y10, cr10, D1, D2);
+  int r11 = csc_macc2_shift_sat( y11, cr11, D1, D2);
 
   int g00 = csc_macc3_shift_sat( y00, cr00, cb00, D1, -D3, -D4);
   int g01 = csc_macc3_shift_sat( y01, cr01, cb01, D1, -D3, -D4);
   int g10 = csc_macc3_shift_sat( y10, cr10, cb10, D1, -D3, -D4);
   int g11 = csc_macc3_shift_sat( y11, cr11, cb11, D1, -D3, -D4);
 
-  int b00 = csc_macc3_shift_sat( y00, cb00, 0, D1, D5, 0);
-  int b01 = csc_macc3_shift_sat( y01, cb01, 0, D1, D5, 0);
-  int b10 = csc_macc3_shift_sat( y10, cb10, 0, D1, D5, 0);
-  int b11 = csc_macc3_shift_sat( y11, cb11, 0, D1, D5, 0);
+  int b00 = csc_macc2_shift_sat( y00, cb00, D1, D5);
+  int b01 = csc_macc2_shift_sat( y01, cb01, D1, D5);
+  int b10 = csc_macc2_shift_sat( y10, cb10, D1, D5);
+  int b11 = csc_macc2_shift_sat( y11, cb11, D1, D5);
 
   R[row+0][col+0] = saturate_to_u8(r00);
   R[row+0][col+1] = saturate_to_u8(r01);
@@ -413,9 +444,7 @@ static void CSC_YCC_to_RGB_optimized( int row, int col) {
   B[row+0][col+1] = saturate_to_u8(b01);
   B[row+1][col+0] = saturate_to_u8(b10);
   B[row+1][col+1] = saturate_to_u8(b11);
-#endif
 #else
-  //fprintf(stderr, "[CSC_YCC_to_RGB] optimized path disabled; using brute-force integer fallback\n");
   CSC_YCC_to_RGB_brute_force_int( row, col);
 #endif
 }
@@ -544,13 +573,26 @@ static void chrominance_array_upsample( void) {
 void CSC_YCC_to_RGB( void) {
   int row, col; // indices for row and column
 //
-  if( YCC_to_RGB_ROUTINE == 3 || YCC_to_RGB_ROUTINE == 2) {
+  // Cb/Cr only need to be upsampled once per frame -- all three routines
+  // (float, brute-force int, optimized) read from Cb_temp/Cr_temp, so this
+  // is hoisted out of every per-block routine and done exactly once here.
+  if( YCC_to_RGB_ROUTINE == 1 || YCC_to_RGB_ROUTINE == 2 || YCC_to_RGB_ROUTINE == 3) {
     chrominance_array_upsample();
   }
 
- for( row=0; row<IMAGE_ROW_SIZE; row+=2) {
+#if CSC_ENABLE_YCC_TO_RGB_OPTIMIZED && CSC_ENABLE_YCC_TO_RGB_NEON && (defined(__ARM_NEON) || defined(__ARM_NEON__))
+  if( YCC_to_RGB_ROUTINE == 3) {
+    // NEON path processes a full row-pair per iteration rather than
+    // dispatching per 2x2 block.
+    for( row=0; row<IMAGE_ROW_SIZE; row+=2) {
+      CSC_YCC_to_RGB_optimized_row_neon( row);
+    }
+    return;
+  }
+#endif
+
+  for( row=0; row<IMAGE_ROW_SIZE; row+=2) {
     for( col=0; col<IMAGE_COL_SIZE; col+=2) { 
-      //printf( "\n[row,col] = [%02i,%02i]\n\n", row, col);
       switch (YCC_to_RGB_ROUTINE) {
         case 0:
           break;
@@ -566,12 +608,7 @@ void CSC_YCC_to_RGB( void) {
         default:
           break;
       }
-//      printf( "Luma_00  = %02hhx\n", Y[row+0][col+0]);
-//      printf( "Luma_01  = %02hhx\n", Y[row+0][col+1]);
-//      printf( "Luma_10  = %02hhx\n", Y[row+1][col+0]);
-//      printf( "Luma_11  = %02hhx\n\n", Y[row+1][col+1]);
     }
   }
 
 } // END of CSC_YCC_to_RGB()
-
