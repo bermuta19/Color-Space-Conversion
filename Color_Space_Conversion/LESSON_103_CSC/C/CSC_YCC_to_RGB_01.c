@@ -40,82 +40,134 @@ static void chrominance_array_upsample( void);
 // so this amortizes NEON setup/teardown cost over a whole row instead of a
 // single 2x2 block.
 static void CSC_YCC_to_RGB_neon_subrow(
-    const uint8_t *y_row, const uint8_t *cb_row, const uint8_t *cr_row,
-    uint8_t *r_row, uint8_t *g_row, uint8_t *b_row, int count) {
+    const uint8_t *y_row,
+    const uint8_t *cb_row,
+    const uint8_t *cr_row,
+    uint8_t *r_row,
+    uint8_t *g_row,
+    uint8_t *b_row,
+    int count)
+{
+    const int32x4_t round   = vdupq_n_s32(1 << (CSC_FIXED_POINT_SHIFT - 1));
+    const int32x4_t biasY   = vdupq_n_s32(16);
+    const int32x4_t biasC   = vdupq_n_s32(128);
 
-  int32x4_t round  = vdupq_n_s32(1 << (CSC_FIXED_POINT_SHIFT - 1));
-  int32x4_t bias_y  = vdupq_n_s32(16);
-  int32x4_t bias_ch = vdupq_n_s32(128);
+    int i;
 
-  int i = 0;
-  // vld1_u8 loads a full 8-byte (8-pixel) NEON register per call. Process
-  // both 4-lane halves of each load instead of discarding the upper half --
-  // otherwise every pixel gets loaded and widened twice for no benefit.
-  for( ; i + 8 <= count; i += 8) {
-    uint8x8_t y_u8  = vld1_u8( y_row + i);
-    uint8x8_t cb_u8 = vld1_u8( cb_row + i);
-    uint8x8_t cr_u8 = vld1_u8( cr_row + i);
+    for (i = 0; i + 8 <= count; i += 8)
+    {
+        uint8x8_t y8  = vld1_u8(y_row  + i);
+        uint8x8_t cb8 = vld1_u8(cb_row + i);
+        uint8x8_t cr8 = vld1_u8(cr_row + i);
 
-    int16x8_t y_s16  = vreinterpretq_s16_u16(vmovl_u8(y_u8));
-    int16x8_t cb_s16 = vreinterpretq_s16_u16(vmovl_u8(cb_u8));
-    int16x8_t cr_s16 = vreinterpretq_s16_u16(vmovl_u8(cr_u8));
+        int16x8_t y16  = vreinterpretq_s16_u16(vmovl_u8(y8));
+        int16x8_t cb16 = vreinterpretq_s16_u16(vmovl_u8(cb8));
+        int16x8_t cr16 = vreinterpretq_s16_u16(vmovl_u8(cr8));
 
-    for( int half = 0; half < 2; ++half) {
-      int32x4_t yy  = (half == 0) ? vmovl_s16(vget_low_s16(y_s16))  : vmovl_s16(vget_high_s16(y_s16));
-      int32x4_t cbv = (half == 0) ? vmovl_s16(vget_low_s16(cb_s16)) : vmovl_s16(vget_high_s16(cb_s16));
-      int32x4_t crv = (half == 0) ? vmovl_s16(vget_low_s16(cr_s16)) : vmovl_s16(vget_high_s16(cr_s16));
+        uint16x4_t r16_half[2];
+        uint16x4_t g16_half[2];
+        uint16x4_t b16_half[2];
 
-      yy  = vsubq_s32(yy, bias_y);
-      cbv = vsubq_s32(cbv, bias_ch);
-      crv = vsubq_s32(crv, bias_ch);
+        for (int half = 0; half < 2; half++)
+        {
+            int32x4_t y =
+                vmovl_s16(half ? vget_high_s16(y16) : vget_low_s16(y16));
+            int32x4_t cb =
+                vmovl_s16(half ? vget_high_s16(cb16) : vget_low_s16(cb16));
+            int32x4_t cr =
+                vmovl_s16(half ? vget_high_s16(cr16) : vget_low_s16(cr16));
 
-      int32x4_t rr = vaddq_s32(vmulq_n_s32(yy, D1), vmulq_n_s32(crv, D2));
-      rr = vshrq_n_s32(vaddq_s32(rr, round), CSC_FIXED_POINT_SHIFT);
+            y  = vsubq_s32(y, biasY);
+            cb = vsubq_s32(cb, biasC);
+            cr = vsubq_s32(cr, biasC);
 
-      int32x4_t gg = vmulq_n_s32(yy, D1);
-      gg = vmlaq_n_s32(gg, crv, -D3);
-      gg = vmlaq_n_s32(gg, cbv, -D4);
-      gg = vshrq_n_s32(vaddq_s32(gg, round), CSC_FIXED_POINT_SHIFT);
+            //-----------------------------------------
+            // Compute Y contribution ONCE
+            //-----------------------------------------
 
-      int32x4_t bb = vaddq_s32(vmulq_n_s32(yy, D1), vmulq_n_s32(cbv, D5));
-      bb = vshrq_n_s32(vaddq_s32(bb, round), CSC_FIXED_POINT_SHIFT);
+            int32x4_t yscaled = vmulq_n_s32(y, D1);
 
-      int32_t r_out[4], g_out[4], b_out[4];
-      vst1q_s32(r_out, rr);
-      vst1q_s32(g_out, gg);
-      vst1q_s32(b_out, bb);
+            //-----------------------------------------
+            // R
+            //-----------------------------------------
 
-      int base = i + half * 4;
-      for( int k = 0; k < 4; ++k) {
-        int v;
-        v = r_out[k]; if( v < 0) v = 0; else if( v > 255) v = 255; r_row[base+k] = (uint8_t)v;
-        v = g_out[k]; if( v < 0) v = 0; else if( v > 255) v = 255; g_row[base+k] = (uint8_t)v;
-        v = b_out[k]; if( v < 0) v = 0; else if( v > 255) v = 255; b_row[base+k] = (uint8_t)v;
-      }
+            int32x4_t r =
+                vaddq_s32(yscaled, vmulq_n_s32(cr, D2));
+
+            r = vshrq_n_s32(vaddq_s32(r, round),
+                            CSC_FIXED_POINT_SHIFT);
+
+            //-----------------------------------------
+            // G
+            //-----------------------------------------
+
+            int32x4_t g = yscaled;
+
+            g = vmlaq_n_s32(g, cr, -D3);
+            g = vmlaq_n_s32(g, cb, -D4);
+
+            g = vshrq_n_s32(vaddq_s32(g, round),
+                            CSC_FIXED_POINT_SHIFT);
+
+            //-----------------------------------------
+            // B
+            //-----------------------------------------
+
+            int32x4_t b =
+                vaddq_s32(yscaled, vmulq_n_s32(cb, D5));
+
+            b = vshrq_n_s32(vaddq_s32(b, round),
+                            CSC_FIXED_POINT_SHIFT);
+
+            //-----------------------------------------
+            // Saturating narrowing
+            //-----------------------------------------
+
+            r16_half[half] = vqmovun_s32(r);
+            g16_half[half] = vqmovun_s32(g);
+            b16_half[half] = vqmovun_s32(b);
+        }
+
+        //---------------------------------------------
+        // Pack 8 pixels
+        //---------------------------------------------
+
+        uint8x8_t r8out =
+            vqmovn_u16(vcombine_u16(r16_half[0], r16_half[1]));
+
+        uint8x8_t g8out =
+            vqmovn_u16(vcombine_u16(g16_half[0], g16_half[1]));
+
+        uint8x8_t b8out =
+            vqmovn_u16(vcombine_u16(b16_half[0], b16_half[1]));
+
+        vst1_u8(r_row + i, r8out);
+        vst1_u8(g_row + i, g8out);
+        vst1_u8(b_row + i, b8out);
     }
-  }
 
-  // Scalar cleanup for any remainder (count not divisible by 8).
-  for( ; i < count; ++i) {
-    int y  = (int)y_row[i]  - 16;
-    int cb = (int)cb_row[i] - 128;
-    int cr = (int)cr_row[i] - 128;
+    //-----------------------------------------
+    // Scalar cleanup
+    //-----------------------------------------
 
-    int r = D1*y + D2*cr + CSC_ROUNDING;
-    r >>= CSC_FIXED_POINT_SHIFT;
-    int g = D1*y - D3*cr - D4*cb + CSC_ROUNDING;
-    g >>= CSC_FIXED_POINT_SHIFT;
-    int b = D1*y + D5*cb + CSC_ROUNDING;
-    b >>= CSC_FIXED_POINT_SHIFT;
+    for (; i < count; i++)
+    {
+        int y  = y_row[i]  - 16;
+        int cb = cb_row[i] - 128;
+        int cr = cr_row[i] - 128;
 
-    if( r < 0) r = 0; else if( r > 255) r = 255;
-    if( g < 0) g = 0; else if( g > 255) g = 255;
-    if( b < 0) b = 0; else if( b > 255) b = 255;
+        int r = (D1*y + D2*cr + CSC_ROUNDING) >> CSC_FIXED_POINT_SHIFT;
+        int g = (D1*y - D3*cr - D4*cb + CSC_ROUNDING) >> CSC_FIXED_POINT_SHIFT;
+        int b = (D1*y + D5*cb + CSC_ROUNDING) >> CSC_FIXED_POINT_SHIFT;
 
-    r_row[i] = (uint8_t)r;
-    g_row[i] = (uint8_t)g;
-    b_row[i] = (uint8_t)b;
-  }
+        if (r < 0) r = 0; else if (r > 255) r = 255;
+        if (g < 0) g = 0; else if (g > 255) g = 255;
+        if (b < 0) b = 0; else if (b > 255) b = 255;
+
+        r_row[i] = (uint8_t)r;
+        g_row[i] = (uint8_t)g;
+        b_row[i] = (uint8_t)b;
+    }
 }
 
 // Processes an entire row-pair (row, row+1) in two subrow calls instead of
