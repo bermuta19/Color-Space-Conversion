@@ -54,6 +54,14 @@ static FILE *open_with_fallback( const char *base_name, const char *mode) {
 }
 
 int main( void) {
+  printf("RGB_OPT=%d RGB_NEON=%d YCC_OPT=%d YCC_NEON=%d YCC_ASM=%d ROUTINE_RGB=%d ROUTINE_YCC=%d\n",
+       CSC_ENABLE_RGB_TO_YCC_OPTIMIZED,
+       CSC_ENABLE_RGB_TO_YCC_NEON,
+       CSC_ENABLE_YCC_TO_RGB_OPTIMIZED,
+       CSC_ENABLE_YCC_TO_RGB_NEON,
+       CSC_ENABLE_YCC_TO_RGB_ASM,
+       RGB_to_YCC_ROUTINE,
+       YCC_to_RGB_ROUTINE);
   int row, col;
   int benchmark_rounds = 50;
   int run;
