@@ -66,6 +66,10 @@ int main( void) {
   int benchmark_rounds = 50;
   int run;
   clock_t start, finish;
+  clock_t rgb_start, rgb_finish;
+  clock_t ycc_start, ycc_finish;
+  double rgb_total_seconds = 0.0;
+  double ycc_total_seconds = 0.0;
   char cwd[512];
   const char *input_name = getenv( "CSC_INPUT_IMAGE");
   const char *output_prefix = getenv( "CSC_OUTPUT_PREFIX");
@@ -159,15 +163,27 @@ int main( void) {
   printf( "Starting CSC conversion...\n");
   start = clock();
   for( run = 0; run < benchmark_rounds; ++run) {
+    rgb_start = clock();
     CSC_RGB_to_YCC();
-    printf( "CSC_RGB_to_YCC() completed\n");
+    rgb_finish = clock();
+
+    ycc_start = clock();
     CSC_YCC_to_RGB();
-    printf( "CSC_YCC_to_RGB() completed\n");
+    ycc_finish = clock();
+
+    rgb_total_seconds += (double)(rgb_finish - rgb_start) / CLOCKS_PER_SEC;
+    ycc_total_seconds += (double)(ycc_finish - ycc_start) / CLOCKS_PER_SEC;
   }
   finish = clock();
-  printf( "CSC benchmark: %d rounds, %.3f seconds\n",
+  printf( "CSC benchmark: %d rounds, total %.3f seconds\n",
           benchmark_rounds,
           (double)(finish - start) / CLOCKS_PER_SEC);
+  printf( "RGB->YCC total: %.6f s (avg %.6f s/round)\n",
+          rgb_total_seconds,
+          rgb_total_seconds / benchmark_rounds);
+  printf( "YCC->RGB total: %.6f s (avg %.6f s/round)\n",
+          ycc_total_seconds,
+          ycc_total_seconds / benchmark_rounds);
 
   f_ID_output_Y = fopen( output_y_path, "wb");
   if( f_ID_output_Y == NULL) {
