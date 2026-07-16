@@ -2,7 +2,7 @@
 // Color Space Conversion (CSC) in fixed-point arithmetic
 // RGB to YCC conversion
 
-//#include <stdio.h>
+#include <stdio.h>
 #include <stdint.h>
 #if defined(__ARM_NEON) || defined(__ARM_NEON__)
 #include <arm_neon.h>
@@ -32,7 +32,7 @@ static uint8_t chrominance_downsample(
 
 // private definitions
 // =======
-#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+#if CSC_ENABLE_RGB_TO_YCC_OPTIMIZED && CSC_ENABLE_RGB_TO_YCC_NEON && (defined(__ARM_NEON) || defined(__ARM_NEON__))
 static void CSC_RGB_to_YCC_neon_4px(
     const uint8_t *r, const uint8_t *g, const uint8_t *b,
     uint8_t *y, uint8_t *cb, uint8_t *cr) {
@@ -273,8 +273,10 @@ static void CSC_RGB_to_YCC_optimized(
   const int bias_ch = 128 << CSC_FIXED_POINT_SHIFT;
   const int round = 1 << (CSC_FIXED_POINT_SHIFT - 1);
 
-#if CSC_USE_NEON && (defined(__ARM_NEON) || defined(__ARM_NEON__))
+#if CSC_ENABLE_RGB_TO_YCC_OPTIMIZED
+#if CSC_ENABLE_RGB_TO_YCC_NEON && CSC_USE_NEON && (defined(__ARM_NEON) || defined(__ARM_NEON__))
   {
+    fprintf(stderr, "[CSC_RGB_to_YCC] using NEON optimized path\n");
     uint8_t y_block[4];
     uint8_t cb_block[4];
     uint8_t cr_block[4];
@@ -298,6 +300,48 @@ static void CSC_RGB_to_YCC_optimized(
     return;
   }
 #else
+  int y0 = bias + C11 * r0 + C12 * g0 + C13 * b0 + round;
+  int y1 = bias + C11 * r1 + C12 * g1 + C13 * b1 + round;
+  int y2 = bias + C11 * r2 + C12 * g2 + C13 * b2 + round;
+  int y3 = bias + C11 * r3 + C12 * g3 + C13 * b3 + round;
+  y0 >>= CSC_FIXED_POINT_SHIFT;
+  y1 >>= CSC_FIXED_POINT_SHIFT;
+  y2 >>= CSC_FIXED_POINT_SHIFT;
+  y3 >>= CSC_FIXED_POINT_SHIFT;
+
+  int cb0 = bias_ch - C21 * r0 - C22 * g0 + C23 * b0 + round;
+  int cb1 = bias_ch - C21 * r1 - C22 * g1 + C23 * b1 + round;
+  int cb2 = bias_ch - C21 * r2 - C22 * g2 + C23 * b2 + round;
+  int cb3 = bias_ch - C21 * r3 - C22 * g3 + C23 * b3 + round;
+  cb0 >>= CSC_FIXED_POINT_SHIFT;
+  cb1 >>= CSC_FIXED_POINT_SHIFT;
+  cb2 >>= CSC_FIXED_POINT_SHIFT;
+  cb3 >>= CSC_FIXED_POINT_SHIFT;
+
+  int cr0 = bias_ch + C31 * r0 - C32 * g0 - C33 * b0 + round;
+  int cr1 = bias_ch + C31 * r1 - C32 * g1 - C33 * b1 + round;
+  int cr2 = bias_ch + C31 * r2 - C32 * g2 - C33 * b2 + round;
+  int cr3 = bias_ch + C31 * r3 - C32 * g3 - C33 * b3 + round;
+  cr0 >>= CSC_FIXED_POINT_SHIFT;
+  cr1 >>= CSC_FIXED_POINT_SHIFT;
+  cr2 >>= CSC_FIXED_POINT_SHIFT;
+  cr3 >>= CSC_FIXED_POINT_SHIFT;
+
+  *out_y0 = y0;
+  *out_y1 = y1;
+  *out_y2 = y2;
+  *out_y3 = y3;
+  *out_cb0 = cb0;
+  *out_cb1 = cb1;
+  *out_cb2 = cb2;
+  *out_cb3 = cb3;
+  *out_cr0 = cr0;
+  *out_cr1 = cr1;
+  *out_cr2 = cr2;
+  *out_cr3 = cr3;
+#endif
+#else
+  fprintf(stderr, "[CSC_RGB_to_YCC] optimized path disabled; using scalar fallback\n");
   int y0 = bias + C11 * r0 + C12 * g0 + C13 * b0 + round;
   int y1 = bias + C11 * r1 + C12 * g1 + C13 * b1 + round;
   int y2 = bias + C11 * r2 + C12 * g2 + C13 * b2 + round;

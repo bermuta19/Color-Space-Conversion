@@ -2,7 +2,7 @@
 // Color Space Conversion (CSC) in fixed-point arithmetic
 // YCC to RGB conversion
 
-//#include <stdio.h>
+#include <stdio.h>
 #include <stdint.h>
 #if defined(__ARM_NEON) || defined(__ARM_NEON__)
 #include <arm_neon.h>
@@ -10,6 +10,8 @@
 #include "CSC_global.h"
 
 // private data
+static int csc_ycc_to_rgb_asm_printed = 0;
+static int csc_ycc_to_rgb_scalar_printed = 0;
 
 // private prototypes
 // =======
@@ -33,8 +35,7 @@ static void chrominance_array_upsample( void);
 
 // private definitions
 // =======
-#if defined(__ARM_NEON) || defined(__ARM_NEON__)
-#include <stdio.h>
+#if CSC_ENABLE_YCC_TO_RGB_OPTIMIZED && CSC_ENABLE_YCC_TO_RGB_NEON && (defined(__ARM_NEON) || defined(__ARM_NEON__))
 static void CSC_YCC_to_RGB_neon_4px(
     const uint8_t *y, const uint8_t *cb, const uint8_t *cr,
     uint8_t *r, uint8_t *g, uint8_t *b) {
@@ -295,7 +296,11 @@ static void CSC_YCC_to_RGB_brute_force_int( int row, int col) {
 static inline int csc_macc3_shift_sat(
     int a, int b, int c,
     int coeff_a, int coeff_b, int coeff_c) {
-#if defined(__arm__) || defined(__thumb__) || defined(__ARM_ARCH_7A__) || defined(__ARM_ARCH_7R__)
+#if CSC_ENABLE_YCC_TO_RGB_ASM && (defined(__arm__) || defined(__thumb__) || defined(__ARM_ARCH_7A__) || defined(__ARM_ARCH_7R__))
+  if (!csc_ycc_to_rgb_asm_printed) {
+    fprintf(stderr, "[CSC_YCC_to_RGB] using inline assembly path in csc_macc3_shift_sat\n");
+    csc_ycc_to_rgb_asm_printed = 1;
+  }
   int out;
   __asm__ volatile (
       "mla %[out], %[a], %[coeff_a], %[round]\n\t"
@@ -310,6 +315,10 @@ static inline int csc_macc3_shift_sat(
       : "cc");
   return out;
 #else
+  if (!csc_ycc_to_rgb_scalar_printed) {
+    fprintf(stderr, "[CSC_YCC_to_RGB] using scalar C path in csc_macc3_shift_sat\n");
+    csc_ycc_to_rgb_scalar_printed = 1;
+  }
   int tmp = coeff_a * a + coeff_b * b + coeff_c * c + CSC_ROUNDING;
   tmp >>= CSC_FIXED_POINT_SHIFT;
   if( tmp < 0) {
@@ -349,8 +358,10 @@ static void CSC_YCC_to_RGB_optimized( int row, int col) {
   int cr10 = (int)Cr_temp[row+1][col+0] - 128;
   int cr11 = (int)Cr_temp[row+1][col+1] - 128;
 
-#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+#if CSC_ENABLE_YCC_TO_RGB_OPTIMIZED
+#if CSC_ENABLE_YCC_TO_RGB_NEON && (defined(__ARM_NEON) || defined(__ARM_NEON__))
   {
+    fprintf(stderr, "[CSC_YCC_to_RGB] using NEON optimized path\n");
     uint8_t y_block[4] = { (uint8_t)(y00 + 16), (uint8_t)(y01 + 16), (uint8_t)(y10 + 16), (uint8_t)(y11 + 16) };
     uint8_t cb_block[4] = { (uint8_t)(cb00 + 128), (uint8_t)(cb01 + 128), (uint8_t)(cb10 + 128), (uint8_t)(cb11 + 128) };
     uint8_t cr_block[4] = { (uint8_t)(cr00 + 128), (uint8_t)(cr01 + 128), (uint8_t)(cr10 + 128), (uint8_t)(cr11 + 128) };
@@ -372,6 +383,7 @@ static void CSC_YCC_to_RGB_optimized( int row, int col) {
     return;
   }
 #else
+  fprintf(stderr, "[CSC_YCC_to_RGB] using scalar optimized path\n");
   int r00 = csc_macc3_shift_sat( y00, cr00, 0, D1, D2, 0);
   int r01 = csc_macc3_shift_sat( y01, cr01, 0, D1, D2, 0);
   int r10 = csc_macc3_shift_sat( y10, cr10, 0, D1, D2, 0);
@@ -401,6 +413,10 @@ static void CSC_YCC_to_RGB_optimized( int row, int col) {
   B[row+0][col+1] = saturate_to_u8(b01);
   B[row+1][col+0] = saturate_to_u8(b10);
   B[row+1][col+1] = saturate_to_u8(b11);
+#endif
+#else
+  fprintf(stderr, "[CSC_YCC_to_RGB] optimized path disabled; using brute-force integer fallback\n");
+  CSC_YCC_to_RGB_brute_force_int( row, col);
 #endif
 }
 
