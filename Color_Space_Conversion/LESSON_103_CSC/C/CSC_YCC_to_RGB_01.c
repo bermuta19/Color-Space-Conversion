@@ -591,7 +591,8 @@ void CSC_YCC_to_RGB( void) {
   }
 
 #if CSC_ENABLE_YCC_TO_RGB_OPTIMIZED && CSC_ENABLE_YCC_TO_RGB_NEON && (defined(__ARM_NEON) || defined(__ARM_NEON__))
-  if( YCC_to_RGB_ROUTINE == 3) {
+  printf("NEON path is enabled for YCC to RGB conversion.\n");  
+if( YCC_to_RGB_ROUTINE == 3) {
     // NEON path processes a full row-pair per iteration rather than
     // dispatching per 2x2 block.
     for( row=0; row<IMAGE_ROW_SIZE; row+=2) {
