@@ -9,6 +9,7 @@
 #endif
 #include "CSC_global.h"
 
+
 // private data
 
 // private prototypes
@@ -30,6 +31,124 @@ static void chrominance_upsample(
     uint8_t *top, uint8_t *left, uint8_t *middle);
 // =======
 static void chrominance_array_upsample( void);
+
+//TODO verify
+
+// D1..D5 and K are assumed to be the same compile-time constants used by
+// the scalar version. K MUST be a compile-time immediate (1..32) because
+// vshrq_n_s32 requires an immediate shift amount.
+
+static inline void CSC_YCC_to_RGB_neon_8( const uint8_t *Yp,
+                                           const uint8_t *Cbp,
+                                           const uint8_t *Crp,
+                                           uint8_t *Rp,
+                                           uint8_t *Gp,
+                                           uint8_t *Bp)
+{
+    // ---- load 8 pixels, widen u8 -> s16 -> s32 ----
+    int16x8_t y16  = vreinterpretq_s16_u16(vmovl_u8(vld1_u8(Yp)));
+    int16x8_t cb16 = vreinterpretq_s16_u16(vmovl_u8(vld1_u8(Cbp)));
+    int16x8_t cr16 = vreinterpretq_s16_u16(vmovl_u8(vld1_u8(Crp)));
+
+    y16  = vsubq_s16(y16,  vdupq_n_s16(16));
+    cb16 = vsubq_s16(cb16, vdupq_n_s16(128));
+    cr16 = vsubq_s16(cr16, vdupq_n_s16(128));
+
+    int32x4_t y_lo  = vmovl_s16(vget_low_s16(y16));
+    int32x4_t y_hi  = vmovl_s16(vget_high_s16(y16));
+    int32x4_t cb_lo = vmovl_s16(vget_low_s16(cb16));
+    int32x4_t cb_hi = vmovl_s16(vget_high_s16(cb16));
+    int32x4_t cr_lo = vmovl_s16(vget_low_s16(cr16));
+    int32x4_t cr_hi = vmovl_s16(vget_high_s16(cr16));
+
+    const int32x4_t d1    = vdupq_n_s32(D1);
+    const int32x4_t d2    = vdupq_n_s32(D2);
+    const int32x4_t d3    = vdupq_n_s32(D3);
+    const int32x4_t d4    = vdupq_n_s32(D4);
+    const int32x4_t d5    = vdupq_n_s32(D5);
+    const int32x4_t round = vdupq_n_s32(1 << (K - 1));
+
+    // ---- R = D1*Y + D2*Cr, +round, >>K ----
+    int32x4_t r_lo = vmlaq_s32(vmulq_s32(d1, y_lo), d2, cr_lo);
+    int32x4_t r_hi = vmlaq_s32(vmulq_s32(d1, y_hi), d2, cr_hi);
+    r_lo = vshrq_n_s32(vaddq_s32(r_lo, round), K);
+    r_hi = vshrq_n_s32(vaddq_s32(r_hi, round), K);
+
+    // ---- G = D1*Y - D3*Cr - D4*Cb, +round, >>K ----
+    int32x4_t g_lo = vmlsq_s32(vmlsq_s32(vmulq_s32(d1, y_lo), d3, cr_lo), d4, cb_lo);
+    int32x4_t g_hi = vmlsq_s32(vmlsq_s32(vmulq_s32(d1, y_hi), d3, cr_hi), d4, cb_hi);
+    g_lo = vshrq_n_s32(vaddq_s32(g_lo, round), K);
+    g_hi = vshrq_n_s32(vaddq_s32(g_hi, round), K);
+
+    // ---- B = D1*Y + D5*Cb, +round, >>K ----
+    int32x4_t b_lo = vmlaq_s32(vmulq_s32(d1, y_lo), d5, cb_lo);
+    int32x4_t b_hi = vmlaq_s32(vmulq_s32(d1, y_hi), d5, cb_hi);
+    b_lo = vshrq_n_s32(vaddq_s32(b_lo, round), K);
+    b_hi = vshrq_n_s32(vaddq_s32(b_hi, round), K);
+
+    // ---- narrow s32 -> s16 -> u8, TRUNCATING (no saturation) ----
+    // This matches the original `(uint8_t)int_value` cast exactly:
+    // it just keeps the low 8 bits, wrapping on overflow instead of
+    // clamping to 0..255.
+    int16x8_t r16 = vcombine_s16(vmovn_s32(r_lo), vmovn_s32(r_hi));
+    int16x8_t g16 = vcombine_s16(vmovn_s32(g_lo), vmovn_s32(g_hi));
+    int16x8_t b16 = vcombine_s16(vmovn_s32(b_lo), vmovn_s32(b_hi));
+
+    uint8x8_t r8 = vmovn_u16(vreinterpretq_u16_s16(r16));
+    uint8x8_t g8 = vmovn_u16(vreinterpretq_u16_s16(g16));
+    uint8x8_t b8 = vmovn_u16(vreinterpretq_u16_s16(b16));
+
+    vst1_u8(Rp, r8);
+    vst1_u8(Gp, g8);
+    vst1_u8(Bp, b8);
+}
+
+// ---- Driver: replaces the 2x2 grouped scalar loop with a per-row,
+// 8-pixels-at-a-time NEON loop over the whole image (or a region).
+// width must be handled for the case where it's not a multiple of 8;
+// the remainder falls back to the scalar-equivalent computation.
+void CSC_YCC_to_RGB_neon( int height, int width)
+{
+    for (int row = 0; row < height; row++) {
+
+        const uint8_t *Yp  = &Y[row][0];
+        const uint8_t *Cbp = &Cb_temp[row][0];
+        const uint8_t *Crp = &Cr_temp[row][0];
+        uint8_t *Rp = &R[row][0];
+        uint8_t *Gp = &G[row][0];
+        uint8_t *Bp = &B[row][0];
+
+        int col = 0;
+        for (; col + 8 <= width; col += 8) {
+            CSC_YCC_to_RGB_neon_8( Yp + col, Cbp + col, Crp + col,
+                                   Rp + col, Gp + col, Bp + col);
+        }
+
+        // scalar remainder (identical arithmetic/truncation behaviour
+        // to the original code, just per-pixel instead of per-2x2-block)
+        for (; col < width; col++) {
+            int y  = (int)Yp[col]  - 16;
+            int cb = (int)Cbp[col] - 128;
+            int cr = (int)Crp[col] - 128;
+
+            int r = D1 * y + D2 * cr;
+            r += (1 << (K - 1));
+            r >>= K;
+
+            int g = D1 * y - D3 * cr - D4 * cb;
+            g += (1 << (K - 1));
+            g >>= K;
+
+            int b = D1 * y + D5 * cb;
+            b += (1 << (K - 1));
+            b >>= K;
+
+            Rp[col] = (uint8_t)r;
+            Gp[col] = (uint8_t)g;
+            Bp[col] = (uint8_t)b;
+        }
+    }
+}
 
 // private definitions
 // =======
@@ -594,8 +713,9 @@ void CSC_YCC_to_RGB( void) {
   }
 
 #if CSC_ENABLE_YCC_TO_RGB_OPTIMIZED && CSC_ENABLE_YCC_TO_RGB_NEON && (defined(__ARM_NEON) || defined(__ARM_NEON__))
-  printf("NEON path is enabled for YCC to RGB conversion.\n");  
+  
 if( YCC_to_RGB_ROUTINE == 3) {
+  printf("NEON path is enabled for YCC to RGB conversion.\n");  
     // NEON path processes a full row-pair per iteration rather than
     // dispatching per 2x2 block.
     for( row=0; row<IMAGE_ROW_SIZE; row+=2) {
@@ -604,7 +724,10 @@ if( YCC_to_RGB_ROUTINE == 3) {
     return;
   }
 #endif
-
+  if( YCC_to_RGB_ROUTINE == 4) {
+    CSC_YCC_to_RGB_neon(IMAGE_ROW_SIZE, IMAGE_COL_SIZE);
+    return;
+  }
   for( row=0; row<IMAGE_ROW_SIZE; row+=2) {
     for( col=0; col<IMAGE_COL_SIZE; col+=2) { 
       switch (YCC_to_RGB_ROUTINE) {
