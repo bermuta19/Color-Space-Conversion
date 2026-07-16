@@ -22,7 +22,7 @@ static uint8_t saturation_int( int argument);
 static void CSC_YCC_to_RGB_brute_force_int( int row, int col);
 
 // =======
-static void CSC_YCC_to_RGB_optimized( int row, int col);
+//static void CSC_YCC_to_RGB_optimized( int row, int col);
 
 // =======
 static void chrominance_upsample(
@@ -152,12 +152,13 @@ void CSC_YCC_to_RGB_neon( int height, int width)
 
 // private definitions
 // =======
-#if CSC_ENABLE_YCC_TO_RGB_OPTIMIZED && CSC_ENABLE_YCC_TO_RGB_NEON && (defined(__ARM_NEON) || defined(__ARM_NEON__))
+//#if CSC_ENABLE_YCC_TO_RGB_OPTIMIZED && CSC_ENABLE_YCC_TO_RGB_NEON && (defined(__ARM_NEON) || defined(__ARM_NEON__))
 
 // Processes one full contiguous sub-row of `count` pixels directly out of
 // the image arrays. Real contiguous loads (no gather through a temp array),
 // so this amortizes NEON setup/teardown cost over a whole row instead of a
 // single 2x2 block.
+/*
 static void CSC_YCC_to_RGB_neon_subrow(
     const uint8_t *y_row,
     const uint8_t *cb_row,
@@ -288,16 +289,17 @@ static void CSC_YCC_to_RGB_neon_subrow(
         b_row[i] = (uint8_t)b;
     }
 }
-
+*/
 // Processes an entire row-pair (row, row+1) in two subrow calls instead of
 // (IMAGE_COL_SIZE / 2) separate 2x2-block calls.
-static void CSC_YCC_to_RGB_optimized_row_neon( int row) {
+/*static void CSC_YCC_to_RGB_optimized_row_neon( int row) {
   CSC_YCC_to_RGB_neon_subrow( Y[row+0], Cb_temp[row+0], Cr_temp[row+0],
                                R[row+0], G[row+0], B[row+0], IMAGE_COL_SIZE);
   CSC_YCC_to_RGB_neon_subrow( Y[row+1], Cb_temp[row+1], Cr_temp[row+1],
                                R[row+1], G[row+1], B[row+1], IMAGE_COL_SIZE);
 }
-#endif
+                               */
+//endif
 
 static uint8_t saturation_float( float argument) {
   if( argument > 255.0) { // saturation
@@ -515,7 +517,7 @@ static uint8_t saturate_to_u8( int value) {
 // Per-2x2-block path. Used directly when NEON is disabled (or unavailable);
 // also used as the ultimate fallback if the optimized path itself is
 // disabled entirely.
-static void CSC_YCC_to_RGB_optimized( int row, int col) {
+/*static void CSC_YCC_to_RGB_optimized( int row, int col) {
   int y00 = (int)Y[row+0][col+0] - 16;
   int y01 = (int)Y[row+0][col+1] - 16;
   int y10 = (int)Y[row+1][col+0] - 16;
@@ -580,6 +582,7 @@ static void CSC_YCC_to_RGB_optimized( int row, int col) {
   CSC_YCC_to_RGB_brute_force_int( row, col);
 #endif
 }
+*/
 
 // =======
 static void chrominance_upsample(
@@ -703,31 +706,18 @@ static void chrominance_array_upsample( void) {
 
 // =======
 void CSC_YCC_to_RGB( void) {
-  int row, col; // indices for row and column
+
 //
   // Cb/Cr only need to be upsampled once per frame -- all three routines
   // (float, brute-force int, optimized) read from Cb_temp/Cr_temp, so this
   // is hoisted out of every per-block routine and done exactly once here.
-  if( YCC_to_RGB_ROUTINE == 1 || YCC_to_RGB_ROUTINE == 2 || YCC_to_RGB_ROUTINE == 3 || YCC_to_RGB_ROUTINE == 4) {
-    chrominance_array_upsample();
-  }
-
-#if CSC_ENABLE_YCC_TO_RGB_OPTIMIZED && CSC_ENABLE_YCC_TO_RGB_NEON && (defined(__ARM_NEON) || defined(__ARM_NEON__))
+  chrominance_array_upsample();
   
-if( YCC_to_RGB_ROUTINE == 3) {
-  printf("NEON path is enabled for YCC to RGB conversion.\n");  
-    // NEON path processes a full row-pair per iteration rather than
-    // dispatching per 2x2 block.
-    for( row=0; row<IMAGE_ROW_SIZE; row+=2) {
-      CSC_YCC_to_RGB_optimized_row_neon( row);
-    }
-    return;
-  }
-#endif
   if( YCC_to_RGB_ROUTINE == 4) {
     CSC_YCC_to_RGB_neon(IMAGE_ROW_SIZE, IMAGE_COL_SIZE);
     return;
   }
+  int row, col; // indices for row and column
   for( row=0; row<IMAGE_ROW_SIZE; row+=2) {
     for( col=0; col<IMAGE_COL_SIZE; col+=2) { 
       switch (YCC_to_RGB_ROUTINE) {
@@ -740,7 +730,7 @@ if( YCC_to_RGB_ROUTINE == 3) {
           CSC_YCC_to_RGB_brute_force_int( row, col);
           break;
         case 3:
-          CSC_YCC_to_RGB_optimized( row, col);
+          //CSC_YCC_to_RGB_optimized( row, col);
           break;
         default:
           break;
