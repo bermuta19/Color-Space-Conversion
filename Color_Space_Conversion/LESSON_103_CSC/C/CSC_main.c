@@ -55,7 +55,7 @@ static FILE *open_with_fallback( const char *base_name, const char *mode) {
 
 int main( void) {
   int row, col;
-  int benchmark_rounds = 1;
+  int benchmark_rounds = 50;
   int run;
   clock_t start, finish;
   char cwd[512];
