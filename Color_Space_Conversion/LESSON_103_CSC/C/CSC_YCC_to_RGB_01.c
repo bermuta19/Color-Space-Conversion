@@ -293,6 +293,36 @@ static void CSC_YCC_to_RGB_brute_force_int( int row, int col) {
 } // END of CSC_YCC_to_RGB_brute_force_int()
 
 // =======
+static inline int csc_macc3_shift_sat(
+    int a, int b, int c,
+    int coeff_a, int coeff_b, int coeff_c) {
+#if defined(__arm__) || defined(__thumb__) || defined(__ARM_ARCH_7A__) || defined(__ARM_ARCH_7R__)
+  int out;
+  __asm__ volatile (
+      "mla %[out], %[a], %[coeff_a], %[round]\n\t"
+      "mla %[out], %[b], %[coeff_b], %[out]\n\t"
+      "mla %[out], %[c], %[coeff_c], %[out]\n\t"
+      "asr %[out], %[out], #8\n\t"
+      "usat %[out], #8, %[out]\n\t"
+      : [out] "=&r" (out)
+      : [a] "r" (a), [b] "r" (b), [c] "r" (c),
+        [coeff_a] "r" (coeff_a), [coeff_b] "r" (coeff_b), [coeff_c] "r" (coeff_c),
+        [round] "r" (CSC_ROUNDING)
+      : "cc");
+  return out;
+#else
+  int tmp = coeff_a * a + coeff_b * b + coeff_c * c + CSC_ROUNDING;
+  tmp >>= CSC_FIXED_POINT_SHIFT;
+  if( tmp < 0) {
+    return 0;
+  }
+  if( tmp > 255) {
+    return 255;
+  }
+  return tmp;
+#endif
+}
+
 static uint8_t saturate_to_u8( int value) {
   if( value < 0) {
     return 0;
@@ -343,20 +373,20 @@ static void CSC_YCC_to_RGB_optimized( int row, int col) {
     return;
   }
 #else
-  int r00 = (D1 * y00 + D2 * cr00 + CSC_ROUNDING) >> CSC_FIXED_POINT_SHIFT;
-  int r01 = (D1 * y01 + D2 * cr01 + CSC_ROUNDING) >> CSC_FIXED_POINT_SHIFT;
-  int r10 = (D1 * y10 + D2 * cr10 + CSC_ROUNDING) >> CSC_FIXED_POINT_SHIFT;
-  int r11 = (D1 * y11 + D2 * cr11 + CSC_ROUNDING) >> CSC_FIXED_POINT_SHIFT;
+  int r00 = csc_macc3_shift_sat( y00, cr00, 0, D1, D2, 0);
+  int r01 = csc_macc3_shift_sat( y01, cr01, 0, D1, D2, 0);
+  int r10 = csc_macc3_shift_sat( y10, cr10, 0, D1, D2, 0);
+  int r11 = csc_macc3_shift_sat( y11, cr11, 0, D1, D2, 0);
 
-  int g00 = (D1 * y00 - D3 * cr00 - D4 * cb00 + CSC_ROUNDING) >> CSC_FIXED_POINT_SHIFT;
-  int g01 = (D1 * y01 - D3 * cr01 - D4 * cb01 + CSC_ROUNDING) >> CSC_FIXED_POINT_SHIFT;
-  int g10 = (D1 * y10 - D3 * cr10 - D4 * cb10 + CSC_ROUNDING) >> CSC_FIXED_POINT_SHIFT;
-  int g11 = (D1 * y11 - D3 * cr11 - D4 * cb11 + CSC_ROUNDING) >> CSC_FIXED_POINT_SHIFT;
+  int g00 = csc_macc3_shift_sat( y00, cr00, cb00, D1, -D3, -D4);
+  int g01 = csc_macc3_shift_sat( y01, cr01, cb01, D1, -D3, -D4);
+  int g10 = csc_macc3_shift_sat( y10, cr10, cb10, D1, -D3, -D4);
+  int g11 = csc_macc3_shift_sat( y11, cr11, cb11, D1, -D3, -D4);
 
-  int b00 = (D1 * y00 + D5 * cb00 + CSC_ROUNDING) >> CSC_FIXED_POINT_SHIFT;
-  int b01 = (D1 * y01 + D5 * cb01 + CSC_ROUNDING) >> CSC_FIXED_POINT_SHIFT;
-  int b10 = (D1 * y10 + D5 * cb10 + CSC_ROUNDING) >> CSC_FIXED_POINT_SHIFT;
-  int b11 = (D1 * y11 + D5 * cb11 + CSC_ROUNDING) >> CSC_FIXED_POINT_SHIFT;
+  int b00 = csc_macc3_shift_sat( y00, cb00, 0, D1, D5, 0);
+  int b01 = csc_macc3_shift_sat( y01, cb01, 0, D1, D5, 0);
+  int b10 = csc_macc3_shift_sat( y10, cb10, 0, D1, D5, 0);
+  int b11 = csc_macc3_shift_sat( y11, cb11, 0, D1, D5, 0);
 
   R[row+0][col+0] = saturate_to_u8(r00);
   R[row+0][col+1] = saturate_to_u8(r01);
