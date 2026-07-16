@@ -2,7 +2,7 @@
 // Color Space Conversion (CSC) in fixed-point arithmetic
 // YCC to RGB conversion
 
-//#include <stdio.h>
+#include <stdio.h>
 #include <stdint.h>
 #if defined(__ARM_NEON) || defined(__ARM_NEON__)
 #include <arm_neon.h>
@@ -10,6 +10,8 @@
 #include "CSC_global.h"
 
 // private data
+static int csc_ycc_to_rgb_asm_printed = 0;
+static int csc_ycc_to_rgb_scalar_printed = 0;
 
 // private prototypes
 // =======
@@ -297,6 +299,10 @@ static inline int csc_macc3_shift_sat(
     int a, int b, int c,
     int coeff_a, int coeff_b, int coeff_c) {
 #if defined(__arm__) || defined(__thumb__) || defined(__ARM_ARCH_7A__) || defined(__ARM_ARCH_7R__)
+  if (!csc_ycc_to_rgb_asm_printed) {
+    fprintf(stderr, "[CSC_YCC_to_RGB] using inline assembly path in csc_macc3_shift_sat\n");
+    csc_ycc_to_rgb_asm_printed = 1;
+  }
   int out;
   __asm__ volatile (
       "mla %[out], %[a], %[coeff_a], %[round]\n\t"
@@ -352,6 +358,7 @@ static void CSC_YCC_to_RGB_optimized( int row, int col) {
 
 #if defined(__ARM_NEON) || defined(__ARM_NEON__)
   {
+    fprintf(stderr, "[CSC_YCC_to_RGB] using NEON optimized path\n");
     uint8_t y_block[4] = { (uint8_t)(y00 + 16), (uint8_t)(y01 + 16), (uint8_t)(y10 + 16), (uint8_t)(y11 + 16) };
     uint8_t cb_block[4] = { (uint8_t)(cb00 + 128), (uint8_t)(cb01 + 128), (uint8_t)(cb10 + 128), (uint8_t)(cb11 + 128) };
     uint8_t cr_block[4] = { (uint8_t)(cr00 + 128), (uint8_t)(cr01 + 128), (uint8_t)(cr10 + 128), (uint8_t)(cr11 + 128) };
@@ -373,6 +380,10 @@ static void CSC_YCC_to_RGB_optimized( int row, int col) {
     return;
   }
 #else
+  if (!csc_ycc_to_rgb_scalar_printed) {
+    fprintf(stderr, "[CSC_YCC_to_RGB] using scalar optimized path\n");
+    csc_ycc_to_rgb_scalar_printed = 1;
+  }
   int r00 = csc_macc3_shift_sat( y00, cr00, 0, D1, D2, 0);
   int r01 = csc_macc3_shift_sat( y01, cr01, 0, D1, D2, 0);
   int r10 = csc_macc3_shift_sat( y10, cr10, 0, D1, D2, 0);
@@ -530,6 +541,7 @@ void CSC_YCC_to_RGB( void) {
   int row, col; // indices for row and column
 //
   if( YCC_to_RGB_ROUTINE == 3) {
+    fprintf(stderr, "[CSC_YCC_to_RGB] using optimized path\n");
     chrominance_array_upsample();
   }
 
@@ -538,17 +550,22 @@ void CSC_YCC_to_RGB( void) {
       //printf( "\n[row,col] = [%02i,%02i]\n\n", row, col);
       switch (YCC_to_RGB_ROUTINE) {
         case 0:
+          fprintf(stderr, "[CSC_YCC_to_RGB] routine 0 selected: no conversion executed\n");
           break;
         case 1:
+          fprintf(stderr, "[CSC_YCC_to_RGB] using brute-force float path\n");
           CSC_YCC_to_RGB_brute_force_float( row, col);
           break;
         case 2:
+          fprintf(stderr, "[CSC_YCC_to_RGB] using brute-force integer path\n");
           CSC_YCC_to_RGB_brute_force_int( row, col);
           break;
         case 3:
+          fprintf(stderr, "[CSC_YCC_to_RGB] using optimized path\n");
           CSC_YCC_to_RGB_optimized( row, col);
           break;
         default:
+          fprintf(stderr, "[CSC_YCC_to_RGB] fallback/default routine selected\n");
           break;
       }
 //      printf( "Luma_00  = %02hhx\n", Y[row+0][col+0]);

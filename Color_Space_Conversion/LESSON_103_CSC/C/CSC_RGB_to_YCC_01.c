@@ -2,7 +2,7 @@
 // Color Space Conversion (CSC) in fixed-point arithmetic
 // RGB to YCC conversion
 
-//#include <stdio.h>
+#include <stdio.h>
 #include <stdint.h>
 #if defined(__ARM_NEON) || defined(__ARM_NEON__)
 #include <arm_neon.h>
@@ -275,6 +275,7 @@ static void CSC_RGB_to_YCC_optimized(
 
 #if CSC_USE_NEON && (defined(__ARM_NEON) || defined(__ARM_NEON__))
   {
+    fprintf(stderr, "[CSC_RGB_to_YCC] using NEON optimized path\n");
     uint8_t y_block[4];
     uint8_t cb_block[4];
     uint8_t cr_block[4];
@@ -298,6 +299,7 @@ static void CSC_RGB_to_YCC_optimized(
     return;
   }
 #else
+  fprintf(stderr, "[CSC_RGB_to_YCC] using scalar optimized path\n");
   int y0 = bias + C11 * r0 + C12 * g0 + C13 * b0 + round;
   int y1 = bias + C11 * r1 + C12 * g1 + C13 * b1 + round;
   int y2 = bias + C11 * r2 + C12 * g2 + C13 * b2 + round;
@@ -372,14 +374,18 @@ void CSC_RGB_to_YCC( void) {
       //printf( "\n[row,col] = [%02i,%02i]\n\n", row, col);
       switch (RGB_to_YCC_ROUTINE) {
         case 0:
+          fprintf(stderr, "[CSC_RGB_to_YCC] routine 0 selected: no conversion executed\n");
           break;
         case 1:
+          fprintf(stderr, "[CSC_RGB_to_YCC] using brute-force float path\n");
           CSC_RGB_to_YCC_brute_force_float( row, col);
           break;
         case 2:
+          fprintf(stderr, "[CSC_RGB_to_YCC] using brute-force integer path\n");
           CSC_RGB_to_YCC_brute_force_int( row, col);
           break;
         case 3: {
+          fprintf(stderr, "[CSC_RGB_to_YCC] using optimized path\n");
           int y0, y1, y2, y3;
           int cb0, cb1, cb2, cb3;
           int cr0, cr1, cr2, cr3;
@@ -401,6 +407,7 @@ void CSC_RGB_to_YCC( void) {
           break;
         }
         default:
+          fprintf(stderr, "[CSC_RGB_to_YCC] fallback/default routine selected\n");
           break;
       }
 //      printf( "Luma_00  = %02hhx\n", Y[row+0][col+0]);
