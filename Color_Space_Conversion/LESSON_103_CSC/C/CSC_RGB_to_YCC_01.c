@@ -276,7 +276,7 @@ static void CSC_RGB_to_YCC_optimized(
 #if CSC_ENABLE_RGB_TO_YCC_OPTIMIZED
 #if CSC_ENABLE_RGB_TO_YCC_NEON && CSC_USE_NEON && (defined(__ARM_NEON) || defined(__ARM_NEON__))
   {
-    fprintf(stderr, "[CSC_RGB_to_YCC] using NEON optimized path\n");
+    //fprintf(stderr, "[CSC_RGB_to_YCC] using NEON optimized path\n");
     uint8_t y_block[4];
     uint8_t cb_block[4];
     uint8_t cr_block[4];
@@ -341,7 +341,7 @@ static void CSC_RGB_to_YCC_optimized(
   *out_cr3 = cr3;
 #endif
 #else
-  fprintf(stderr, "[CSC_RGB_to_YCC] optimized path disabled; using scalar fallback\n");
+  //fprintf(stderr, "[CSC_RGB_to_YCC] optimized path disabled; using scalar fallback\n");
   int y0 = bias + C11 * r0 + C12 * g0 + C13 * b0 + round;
   int y1 = bias + C11 * r1 + C12 * g1 + C13 * b1 + round;
   int y2 = bias + C11 * r2 + C12 * g2 + C13 * b2 + round;

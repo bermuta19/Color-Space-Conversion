@@ -298,7 +298,7 @@ static inline int csc_macc3_shift_sat(
     int coeff_a, int coeff_b, int coeff_c) {
 #if CSC_ENABLE_YCC_TO_RGB_ASM && (defined(__arm__) || defined(__thumb__) || defined(__ARM_ARCH_7A__) || defined(__ARM_ARCH_7R__))
   if (!csc_ycc_to_rgb_asm_printed) {
-    fprintf(stderr, "[CSC_YCC_to_RGB] using inline assembly path in csc_macc3_shift_sat\n");
+    //fprintf(stderr, "[CSC_YCC_to_RGB] using inline assembly path in csc_macc3_shift_sat\n");
     csc_ycc_to_rgb_asm_printed = 1;
   }
   int out;
@@ -316,7 +316,7 @@ static inline int csc_macc3_shift_sat(
   return out;
 #else
   if (!csc_ycc_to_rgb_scalar_printed) {
-    fprintf(stderr, "[CSC_YCC_to_RGB] using scalar C path in csc_macc3_shift_sat\n");
+    //fprintf(stderr, "[CSC_YCC_to_RGB] using scalar C path in csc_macc3_shift_sat\n");
     csc_ycc_to_rgb_scalar_printed = 1;
   }
   int tmp = coeff_a * a + coeff_b * b + coeff_c * c + CSC_ROUNDING;
@@ -361,7 +361,7 @@ static void CSC_YCC_to_RGB_optimized( int row, int col) {
 #if CSC_ENABLE_YCC_TO_RGB_OPTIMIZED
 #if CSC_ENABLE_YCC_TO_RGB_NEON && (defined(__ARM_NEON) || defined(__ARM_NEON__))
   {
-    fprintf(stderr, "[CSC_YCC_to_RGB] using NEON optimized path\n");
+    //fprintf(stderr, "[CSC_YCC_to_RGB] using NEON optimized path\n");
     uint8_t y_block[4] = { (uint8_t)(y00 + 16), (uint8_t)(y01 + 16), (uint8_t)(y10 + 16), (uint8_t)(y11 + 16) };
     uint8_t cb_block[4] = { (uint8_t)(cb00 + 128), (uint8_t)(cb01 + 128), (uint8_t)(cb10 + 128), (uint8_t)(cb11 + 128) };
     uint8_t cr_block[4] = { (uint8_t)(cr00 + 128), (uint8_t)(cr01 + 128), (uint8_t)(cr10 + 128), (uint8_t)(cr11 + 128) };
@@ -383,7 +383,7 @@ static void CSC_YCC_to_RGB_optimized( int row, int col) {
     return;
   }
 #else
-  fprintf(stderr, "[CSC_YCC_to_RGB] using scalar optimized path\n");
+  //fprintf(stderr, "[CSC_YCC_to_RGB] using scalar optimized path\n");
   int r00 = csc_macc3_shift_sat( y00, cr00, 0, D1, D2, 0);
   int r01 = csc_macc3_shift_sat( y01, cr01, 0, D1, D2, 0);
   int r10 = csc_macc3_shift_sat( y10, cr10, 0, D1, D2, 0);
@@ -415,7 +415,7 @@ static void CSC_YCC_to_RGB_optimized( int row, int col) {
   B[row+1][col+1] = saturate_to_u8(b11);
 #endif
 #else
-  fprintf(stderr, "[CSC_YCC_to_RGB] optimized path disabled; using brute-force integer fallback\n");
+  //fprintf(stderr, "[CSC_YCC_to_RGB] optimized path disabled; using brute-force integer fallback\n");
   CSC_YCC_to_RGB_brute_force_int( row, col);
 #endif
 }
