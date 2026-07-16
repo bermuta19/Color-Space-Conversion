@@ -48,21 +48,22 @@ static void CSC_YCC_to_RGB_neon_subrow(
   int32x4_t bias_ch = vdupq_n_s32(128);
 
   int i = 0;
+  // vld1_u8 loads a full 8-byte (8-pixel) NEON register per call. Process
+  // both 4-lane halves of each load instead of discarding the upper half --
+  // otherwise every pixel gets loaded and widened twice for no benefit.
   for( ; i + 8 <= count; i += 8) {
     uint8x8_t y_u8  = vld1_u8( y_row + i);
     uint8x8_t cb_u8 = vld1_u8( cb_row + i);
     uint8x8_t cr_u8 = vld1_u8( cr_row + i);
 
-    // Widen all 8 lanes to 16-bit once...
     int16x8_t y_s16  = vreinterpretq_s16_u16(vmovl_u8(y_u8));
     int16x8_t cb_s16 = vreinterpretq_s16_u16(vmovl_u8(cb_u8));
     int16x8_t cr_s16 = vreinterpretq_s16_u16(vmovl_u8(cr_u8));
 
-    // ...then process low 4 and high 4 separately, using BOTH halves.
     for( int half = 0; half < 2; ++half) {
-      int32x4_t yy  = half == 0 ? vmovl_s16(vget_low_s16(y_s16))  : vmovl_s16(vget_high_s16(y_s16));
-      int32x4_t cbv = half == 0 ? vmovl_s16(vget_low_s16(cb_s16)) : vmovl_s16(vget_high_s16(cb_s16));
-      int32x4_t crv = half == 0 ? vmovl_s16(vget_low_s16(cr_s16)) : vmovl_s16(vget_high_s16(cr_s16));
+      int32x4_t yy  = (half == 0) ? vmovl_s16(vget_low_s16(y_s16))  : vmovl_s16(vget_high_s16(y_s16));
+      int32x4_t cbv = (half == 0) ? vmovl_s16(vget_low_s16(cb_s16)) : vmovl_s16(vget_high_s16(cb_s16));
+      int32x4_t crv = (half == 0) ? vmovl_s16(vget_low_s16(cr_s16)) : vmovl_s16(vget_high_s16(cr_s16));
 
       yy  = vsubq_s32(yy, bias_y);
       cbv = vsubq_s32(cbv, bias_ch);
