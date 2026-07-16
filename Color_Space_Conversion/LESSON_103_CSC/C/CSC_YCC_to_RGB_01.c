@@ -14,6 +14,7 @@
 
 // private prototypes
 // =======
+static uint8_t saturate_to_u8( int value);
 static uint8_t saturation_float( float argument);
 static void CSC_YCC_to_RGB_brute_force_float( int row, int col);
 
