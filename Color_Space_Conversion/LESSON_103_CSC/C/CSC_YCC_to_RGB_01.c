@@ -150,6 +150,17 @@ void CSC_YCC_to_RGB_neon( int height, int width)
     }
 }
 
+// =======
+static uint8_t saturate_to_u8( int value) {
+  if( value < 0) {
+    return 0;
+  }
+  if( value > 255) {
+    return 255;
+  }
+  return (uint8_t)value;
+}
+
 
 
 static uint8_t saturation_float( float argument) {
