@@ -63,7 +63,7 @@ int main( void) {
        RGB_to_YCC_ROUTINE,
        YCC_to_RGB_ROUTINE);
   int row, col;
-  int benchmark_rounds = 50;
+  int benchmark_rounds = 200;
   int run;
   clock_t start, finish;
   clock_t rgb_start, rgb_finish;
