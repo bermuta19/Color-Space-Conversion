@@ -48,44 +48,53 @@ static void CSC_YCC_to_RGB_neon_subrow(
   int32x4_t bias_ch = vdupq_n_s32(128);
 
   int i = 0;
-  for( ; i + 4 <= count; i += 4) {
+  for( ; i + 8 <= count; i += 8) {
     uint8x8_t y_u8  = vld1_u8( y_row + i);
     uint8x8_t cb_u8 = vld1_u8( cb_row + i);
     uint8x8_t cr_u8 = vld1_u8( cr_row + i);
 
-    int32x4_t yy     = vmovl_s16(vget_low_s16(vreinterpretq_s16_u16(vmovl_u8(y_u8))));
-    int32x4_t cb_vec = vmovl_s16(vget_low_s16(vreinterpretq_s16_u16(vmovl_u8(cb_u8))));
-    int32x4_t cr_vec = vmovl_s16(vget_low_s16(vreinterpretq_s16_u16(vmovl_u8(cr_u8))));
+    // Widen all 8 lanes to 16-bit once...
+    int16x8_t y_s16  = vreinterpretq_s16_u16(vmovl_u8(y_u8));
+    int16x8_t cb_s16 = vreinterpretq_s16_u16(vmovl_u8(cb_u8));
+    int16x8_t cr_s16 = vreinterpretq_s16_u16(vmovl_u8(cr_u8));
 
-    yy     = vsubq_s32(yy, bias_y);
-    cb_vec = vsubq_s32(cb_vec, bias_ch);
-    cr_vec = vsubq_s32(cr_vec, bias_ch);
+    // ...then process low 4 and high 4 separately, using BOTH halves.
+    for( int half = 0; half < 2; ++half) {
+      int32x4_t yy  = half == 0 ? vmovl_s16(vget_low_s16(y_s16))  : vmovl_s16(vget_high_s16(y_s16));
+      int32x4_t cbv = half == 0 ? vmovl_s16(vget_low_s16(cb_s16)) : vmovl_s16(vget_high_s16(cb_s16));
+      int32x4_t crv = half == 0 ? vmovl_s16(vget_low_s16(cr_s16)) : vmovl_s16(vget_high_s16(cr_s16));
 
-    int32x4_t rr = vaddq_s32(vmulq_n_s32(yy, D1), vmulq_n_s32(cr_vec, D2));
-    rr = vshrq_n_s32(vaddq_s32(rr, round), CSC_FIXED_POINT_SHIFT);
+      yy  = vsubq_s32(yy, bias_y);
+      cbv = vsubq_s32(cbv, bias_ch);
+      crv = vsubq_s32(crv, bias_ch);
 
-    int32x4_t gg = vmulq_n_s32(yy, D1);
-    gg = vmlaq_n_s32(gg, cr_vec, -D3);
-    gg = vmlaq_n_s32(gg, cb_vec, -D4);
-    gg = vshrq_n_s32(vaddq_s32(gg, round), CSC_FIXED_POINT_SHIFT);
+      int32x4_t rr = vaddq_s32(vmulq_n_s32(yy, D1), vmulq_n_s32(crv, D2));
+      rr = vshrq_n_s32(vaddq_s32(rr, round), CSC_FIXED_POINT_SHIFT);
 
-    int32x4_t bb = vaddq_s32(vmulq_n_s32(yy, D1), vmulq_n_s32(cb_vec, D5));
-    bb = vshrq_n_s32(vaddq_s32(bb, round), CSC_FIXED_POINT_SHIFT);
+      int32x4_t gg = vmulq_n_s32(yy, D1);
+      gg = vmlaq_n_s32(gg, crv, -D3);
+      gg = vmlaq_n_s32(gg, cbv, -D4);
+      gg = vshrq_n_s32(vaddq_s32(gg, round), CSC_FIXED_POINT_SHIFT);
 
-    int32_t r_out[4], g_out[4], b_out[4];
-    vst1q_s32(r_out, rr);
-    vst1q_s32(g_out, gg);
-    vst1q_s32(b_out, bb);
+      int32x4_t bb = vaddq_s32(vmulq_n_s32(yy, D1), vmulq_n_s32(cbv, D5));
+      bb = vshrq_n_s32(vaddq_s32(bb, round), CSC_FIXED_POINT_SHIFT);
 
-    for( int k = 0; k < 4; ++k) {
-      int v;
-      v = r_out[k]; if( v < 0) v = 0; else if( v > 255) v = 255; r_row[i+k] = (uint8_t)v;
-      v = g_out[k]; if( v < 0) v = 0; else if( v > 255) v = 255; g_row[i+k] = (uint8_t)v;
-      v = b_out[k]; if( v < 0) v = 0; else if( v > 255) v = 255; b_row[i+k] = (uint8_t)v;
+      int32_t r_out[4], g_out[4], b_out[4];
+      vst1q_s32(r_out, rr);
+      vst1q_s32(g_out, gg);
+      vst1q_s32(b_out, bb);
+
+      int base = i + half * 4;
+      for( int k = 0; k < 4; ++k) {
+        int v;
+        v = r_out[k]; if( v < 0) v = 0; else if( v > 255) v = 255; r_row[base+k] = (uint8_t)v;
+        v = g_out[k]; if( v < 0) v = 0; else if( v > 255) v = 255; g_row[base+k] = (uint8_t)v;
+        v = b_out[k]; if( v < 0) v = 0; else if( v > 255) v = 255; b_row[base+k] = (uint8_t)v;
+      }
     }
   }
 
-  // Scalar cleanup for any remainder (count not divisible by 4; at most 3 px).
+  // Scalar cleanup for any remainder (count not divisible by 8).
   for( ; i < count; ++i) {
     int y  = (int)y_row[i]  - 16;
     int cb = (int)cb_row[i] - 128;
