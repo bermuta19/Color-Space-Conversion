@@ -607,10 +607,10 @@ void CSC_YCC_to_RGB( void) {
   // Cb/Cr only need to be upsampled once per frame -- all three routines
   // (float, brute-force int, optimized) read from Cb_temp/Cr_temp, so this
   // is hoisted out of every per-block routine and done exactly once here.
-
+  chrominance_array_upsample();
   
   if( YCC_to_RGB_ROUTINE == 4) {
-    chrominance_array_upsample_neon();
+    //chrominance_array_upsample_neon();
     CSC_YCC_to_RGB_neon(IMAGE_ROW_SIZE, IMAGE_COL_SIZE);
     return;
   }
