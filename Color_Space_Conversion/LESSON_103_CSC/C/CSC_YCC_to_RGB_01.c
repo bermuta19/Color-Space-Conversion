@@ -514,14 +514,15 @@ static inline void chroma_upsample_neon_8( const uint8_t *src_row0,
     vst2_u8(dst_row0, out_top);
     vst2_u8(dst_row1, out_mid);
 }
-
-static void chroma_plane_upsample_neon( const uint8_t src[CH_ROWS][CH_COLS],
+static void chroma_plane_upsample_neon( const uint8_t src[IMAGE_ROW_SIZE>>1][IMAGE_COL_SIZE>>1],
                                          uint8_t dst[IMAGE_ROW_SIZE][IMAGE_COL_SIZE])
 {
     int row, col;
+    const int ch_rows = (IMAGE_ROW_SIZE >> 1);
+    const int ch_cols = (IMAGE_COL_SIZE >> 1);
 
     // ---- interior rows/cols, 8 columns at a time ----
-    for (row = 0; row < CH_ROWS - 1; row++) {
+    for (row = 0; row < ch_rows - 1; row++) {
 
         const uint8_t *src_row0 = &src[row][0];
         const uint8_t *src_row1 = &src[row + 1][0];
@@ -529,16 +530,14 @@ static void chroma_plane_upsample_neon( const uint8_t src[CH_ROWS][CH_COLS],
         uint8_t *dst_row1 = &dst[(row << 1) + 1][0];
 
         col = 0;
-        // bound ensures the last lane processed (col+7) is still an
-        // interior column, matching the scalar `col < CH_COLS-1` guard
-        for (; col + 8 <= CH_COLS - 1; col += 8) {
+        for (; col + 8 <= ch_cols - 1; col += 8) {
             chroma_upsample_neon_8( src_row0 + col, src_row1 + col,
                                     dst_row0 + (col << 1),
                                     dst_row1 + (col << 1));
         }
 
         // scalar remainder (interior columns left over, < 8 of them)
-        for (; col < CH_COLS - 1; col++) {
+        for (; col < ch_cols - 1; col++) {
             int c00 = src_row0[col],     c01 = src_row0[col + 1];
             int c10 = src_row1[col],     c11 = src_row1[col + 1];
 
@@ -553,7 +552,7 @@ static void chroma_plane_upsample_neon( const uint8_t src[CH_ROWS][CH_COLS],
         }
 
         // ---- last column of this row-pair: col replicated ----
-        col = CH_COLS - 1;
+        col = ch_cols - 1;
         {
             int c00 = src_row0[col], c10 = src_row1[col];
             int left = (c00 + c10 + 1) >> 1;
@@ -565,14 +564,14 @@ static void chroma_plane_upsample_neon( const uint8_t src[CH_ROWS][CH_COLS],
         }
     }
 
-    // ---- last row: row replicated, cols 0..CH_COLS-2 ----
-    row = CH_ROWS - 1;
+    // ---- last row: row replicated, cols 0..ch_cols-2 ----
+    row = ch_rows - 1;
     {
         const uint8_t *src_row = &src[row][0];
         uint8_t *dst_row0 = &dst[(row << 1) + 0][0];
         uint8_t *dst_row1 = &dst[(row << 1) + 1][0];
 
-        for (col = 0; col < CH_COLS - 1; col++) {
+        for (col = 0; col < ch_cols - 1; col++) {
             int c00 = src_row[col], c01 = src_row[col + 1];
             int top = (c00 + c01 + 1) >> 1;
 
@@ -583,7 +582,7 @@ static void chroma_plane_upsample_neon( const uint8_t src[CH_ROWS][CH_COLS],
         }
 
         // ---- bottom-right corner: single pixel replicated 4x ----
-        col = CH_COLS - 1;
+        col = ch_cols - 1;
         {
             uint8_t v = src_row[col];
             dst_row0[(col << 1) + 0] = v;
@@ -600,6 +599,7 @@ static void chrominance_array_upsample_neon( void)
     chroma_plane_upsample_neon( Cb, Cb_temp);
     chroma_plane_upsample_neon( Cr, Cr_temp);
 }
+
 
 // =======
 void CSC_YCC_to_RGB( void) {
