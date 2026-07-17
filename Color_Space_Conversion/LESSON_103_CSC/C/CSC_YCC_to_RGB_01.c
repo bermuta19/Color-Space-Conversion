@@ -476,20 +476,146 @@ static void chrominance_array_upsample( void) {
 
 } // END of chrominance_array_upsample()
 
+
+
+// Processes 8 consecutive interior chroma columns for one row-pair
+// (row, row+1) of ONE plane (call once for Cb, once for Cr).
+// Writes 16 output bytes into each of two consecutive output rows.
+static inline void chroma_upsample_neon_8( const uint8_t *src_row0,
+                                            const uint8_t *src_row1,
+                                            uint8_t *dst_row0,
+                                            uint8_t *dst_row1)
+{
+    uint8x8_t c0 = vld1_u8(src_row0 + 0);   // C[r][c..c+7]
+    uint8x8_t c1 = vld1_u8(src_row0 + 1);   // C[r][c+1..c+8]  (neighbor)
+    uint8x8_t n0 = vld1_u8(src_row1 + 0);   // C[r+1][c..c+7]
+    uint8x8_t n1 = vld1_u8(src_row1 + 1);   // C[r+1][c+1..c+8]
+
+    // top  = (C00+C01+1)>>1 ; left = (C00+C10+1)>>1
+    // vrhadd_u8 IS this rounding-halving-add, exactly, per lane.
+    uint8x8_t top  = vrhadd_u8(c0, c1);
+    uint8x8_t left = vrhadd_u8(c0, n0);
+
+    // middle = (C00+C01+C10+C11+2)>>2 -- true 4-term rounding average.
+    // NOT vrhadd(top,left)-of-vrhadd -- double rounding gives wrong
+    // answers on some inputs. Widen instead, matching scalar exactly.
+    uint16x8_t sum = vaddl_u8(c0, c1);
+    sum = vaddq_u16(sum, vaddl_u8(n0, n1));
+    sum = vaddq_u16(sum, vdupq_n_u16(2));      // rounding
+    uint8x8_t middle = vmovn_u16(vshrq_n_u16(sum, 2));
+    // max possible sum = 4*255+2 = 1022, >>2 = 255 -- fits u8 exactly,
+    // no saturation needed here.
+
+    // Interleaved stores match the scalar output layout directly:
+    //   dst_row0: C00, top, C00, top, ...
+    //   dst_row1: left, middle, left, middle, ...
+    uint8x8x2_t out_top = { { c0,   top    } };
+    uint8x8x2_t out_mid = { { left, middle } };
+    vst2_u8(dst_row0, out_top);
+    vst2_u8(dst_row1, out_mid);
+}
+
+static void chroma_plane_upsample_neon( const uint8_t src[CH_ROWS][CH_COLS],
+                                         uint8_t dst[IMAGE_ROW_SIZE][IMAGE_COL_SIZE])
+{
+    int row, col;
+
+    // ---- interior rows/cols, 8 columns at a time ----
+    for (row = 0; row < CH_ROWS - 1; row++) {
+
+        const uint8_t *src_row0 = &src[row][0];
+        const uint8_t *src_row1 = &src[row + 1][0];
+        uint8_t *dst_row0 = &dst[(row << 1) + 0][0];
+        uint8_t *dst_row1 = &dst[(row << 1) + 1][0];
+
+        col = 0;
+        // bound ensures the last lane processed (col+7) is still an
+        // interior column, matching the scalar `col < CH_COLS-1` guard
+        for (; col + 8 <= CH_COLS - 1; col += 8) {
+            chroma_upsample_neon_8( src_row0 + col, src_row1 + col,
+                                    dst_row0 + (col << 1),
+                                    dst_row1 + (col << 1));
+        }
+
+        // scalar remainder (interior columns left over, < 8 of them)
+        for (; col < CH_COLS - 1; col++) {
+            int c00 = src_row0[col],     c01 = src_row0[col + 1];
+            int c10 = src_row1[col],     c11 = src_row1[col + 1];
+
+            int top    = (c00 + c01 + 1) >> 1;
+            int left   = (c00 + c10 + 1) >> 1;
+            int middle = (c00 + c01 + c10 + c11 + 2) >> 2;
+
+            dst_row0[(col << 1) + 0] = (uint8_t)c00;
+            dst_row0[(col << 1) + 1] = (uint8_t)top;
+            dst_row1[(col << 1) + 0] = (uint8_t)left;
+            dst_row1[(col << 1) + 1] = (uint8_t)middle;
+        }
+
+        // ---- last column of this row-pair: col replicated ----
+        col = CH_COLS - 1;
+        {
+            int c00 = src_row0[col], c10 = src_row1[col];
+            int left = (c00 + c10 + 1) >> 1;
+
+            dst_row0[(col << 1) + 0] = (uint8_t)c00;
+            dst_row0[(col << 1) + 1] = (uint8_t)c00;   // top == c00
+            dst_row1[(col << 1) + 0] = (uint8_t)left;
+            dst_row1[(col << 1) + 1] = (uint8_t)left;  // middle == left
+        }
+    }
+
+    // ---- last row: row replicated, cols 0..CH_COLS-2 ----
+    row = CH_ROWS - 1;
+    {
+        const uint8_t *src_row = &src[row][0];
+        uint8_t *dst_row0 = &dst[(row << 1) + 0][0];
+        uint8_t *dst_row1 = &dst[(row << 1) + 1][0];
+
+        for (col = 0; col < CH_COLS - 1; col++) {
+            int c00 = src_row[col], c01 = src_row[col + 1];
+            int top = (c00 + c01 + 1) >> 1;
+
+            dst_row0[(col << 1) + 0] = (uint8_t)c00;
+            dst_row0[(col << 1) + 1] = (uint8_t)top;
+            dst_row1[(col << 1) + 0] = (uint8_t)c00;  // left == c00
+            dst_row1[(col << 1) + 1] = (uint8_t)top;  // middle == top
+        }
+
+        // ---- bottom-right corner: single pixel replicated 4x ----
+        col = CH_COLS - 1;
+        {
+            uint8_t v = src_row[col];
+            dst_row0[(col << 1) + 0] = v;
+            dst_row0[(col << 1) + 1] = v;
+            dst_row1[(col << 1) + 0] = v;
+            dst_row1[(col << 1) + 1] = v;
+        }
+    }
+}
+
+// ---- Driver replacing chrominance_array_upsample() ----
+static void chrominance_array_upsample_neon( void)
+{
+    chroma_plane_upsample_neon( Cb, Cb_temp);
+    chroma_plane_upsample_neon( Cr, Cr_temp);
+}
+
 // =======
 void CSC_YCC_to_RGB( void) {
 
-//
   // Cb/Cr only need to be upsampled once per frame -- all three routines
   // (float, brute-force int, optimized) read from Cb_temp/Cr_temp, so this
   // is hoisted out of every per-block routine and done exactly once here.
-  chrominance_array_upsample();
+
   
   if( YCC_to_RGB_ROUTINE == 4) {
+    chrominance_array_upsample_neon();
     CSC_YCC_to_RGB_neon(IMAGE_ROW_SIZE, IMAGE_COL_SIZE);
     return;
   }
   int row, col; // indices for row and column
+  chrominance_array_upsample();
   for( row=0; row<IMAGE_ROW_SIZE; row+=2) {
     for( col=0; col<IMAGE_COL_SIZE; col+=2) { 
       switch (YCC_to_RGB_ROUTINE) {
@@ -500,9 +626,6 @@ void CSC_YCC_to_RGB( void) {
           break;
         case 2:
           CSC_YCC_to_RGB_brute_force_int( row, col);
-          break;
-        case 3:
-          //CSC_YCC_to_RGB_optimized( row, col);
           break;
         default:
           break;
