@@ -2,7 +2,7 @@
 // Color Space Conversion (CSC) in fixed-point arithmetic
 // RGB to YCC conversion
 
-//#include <stdio.h>
+#include <stdio.h>
 #include <stdint.h>
 #include "CSC_global.h"
 #include <arm_neon.h>
