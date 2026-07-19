@@ -337,6 +337,7 @@ static uint8_t chrominance_downsample(
 
 // =======
 void CSC_RGB_to_YCC( void) {
+  printf( RGB_to_YCC_ROUTINE);
   int row, col; // indices for row and column
   uint16x8_t y_base = vdupq_n_u16((16 << K) + 128); //4,224 based on K=8
   uint16x8_t c_base = vdupq_n_u16((128 << K) + 128); //32,896 based on K=8
