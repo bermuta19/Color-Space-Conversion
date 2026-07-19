@@ -514,90 +514,70 @@ static inline void chroma_upsample_neon_8( const uint8_t *src_row0,
     vst2_u8(dst_row0, out_top);
     vst2_u8(dst_row1, out_mid);
 }
-static void chroma_plane_upsample_neon( const uint8_t src[IMAGE_ROW_SIZE>>1][IMAGE_COL_SIZE>>1],
-                                         uint8_t dst[IMAGE_ROW_SIZE][IMAGE_COL_SIZE])
+static inline int clampi(int v, int lo, int hi) {
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
+}
+
+// Correct upsample for CHROMINANCE_DOWNSAMPLING_MODE == 2 (4-pixel average).
+// Mirrors chrominance_downsample()'s plain unweighted-average style:
+// every output pixel is a simple equal-weight average of its 4 nearest
+// block-center samples. No output pixel is a verbatim copy, since an
+// averaged sample doesn't correspond to any single real pixel location
+// (unlike mode 1, which is co-sited with the top-left pixel).
+static void chroma_plane_upsample_avg4(
+        const uint8_t src[IMAGE_ROW_SIZE>>1][IMAGE_COL_SIZE>>1],
+        uint8_t dst[IMAGE_ROW_SIZE][IMAGE_COL_SIZE])
 {
-    int row, col;
-    const int ch_rows = (IMAGE_ROW_SIZE >> 1);
-    const int ch_cols = (IMAGE_COL_SIZE >> 1);
+    const int ch_rows = IMAGE_ROW_SIZE >> 1;
+    const int ch_cols = IMAGE_COL_SIZE >> 1;
 
-    // ---- interior rows/cols, 8 columns at a time ----
-    for (row = 0; row < ch_rows - 1; row++) {
+    for (int i = 0; i < ch_rows; i++) {
+        int i_up   = clampi(i - 1, 0, ch_rows - 1); // edge: replicate
+        int i_down = clampi(i + 1, 0, ch_rows - 1);
 
-        const uint8_t *src_row0 = &src[row][0];
-        const uint8_t *src_row1 = &src[row + 1][0];
-        uint8_t *dst_row0 = &dst[(row << 1) + 0][0];
-        uint8_t *dst_row1 = &dst[(row << 1) + 1][0];
+        for (int j = 0; j < ch_cols; j++) {
+            int j_left  = clampi(j - 1, 0, ch_cols - 1);
+            int j_right = clampi(j + 1, 0, ch_cols - 1);
 
-        col = 0;
-        for (; col + 8 <= ch_cols - 1; col += 8) {
-            chroma_upsample_neon_8( src_row0 + col, src_row1 + col,
-                                    dst_row0 + (col << 1),
-                                    dst_row1 + (col << 1));
-        }
+            int c00 = src[i][j];
+            int c_up    = src[i_up][j];
+            int c_down  = src[i_down][j];
+            int c_left  = src[i][j_left];
+            int c_right = src[i][j_right];
+            int c_ul = src[i_up][j_left];
+            int c_ur = src[i_up][j_right];
+            int c_dl = src[i_down][j_left];
+            int c_dr = src[i_down][j_right];
 
-        // scalar remainder (interior columns left over, < 8 of them)
-        for (; col < ch_cols - 1; col++) {
-            int c00 = src_row0[col],     c01 = src_row0[col + 1];
-            int c10 = src_row1[col],     c11 = src_row1[col + 1];
+            int out_r0 = i << 1;
+            int out_c0 = j << 1;
 
-            int top    = (c00 + c01 + 1) >> 1;
-            int left   = (c00 + c10 + 1) >> 1;
-            int middle = (c00 + c01 + c10 + c11 + 2) >> 2;
+            int tl = c00 + c_up   + c_left  + c_ul; tl += (1 << 1); tl >>= 2;
+            int tr = c00 + c_up   + c_right + c_ur; tr += (1 << 1); tr >>= 2;
+            int bl = c00 + c_down + c_left  + c_dl; bl += (1 << 1); bl >>= 2;
+            int br = c00 + c_down + c_right + c_dr; br += (1 << 1); br >>= 2;
 
-            dst_row0[(col << 1) + 0] = (uint8_t)c00;
-            dst_row0[(col << 1) + 1] = (uint8_t)top;
-            dst_row1[(col << 1) + 0] = (uint8_t)left;
-            dst_row1[(col << 1) + 1] = (uint8_t)middle;
-        }
-
-        // ---- last column of this row-pair: col replicated ----
-        col = ch_cols - 1;
-        {
-            int c00 = src_row0[col], c10 = src_row1[col];
-            int left = (c00 + c10 + 1) >> 1;
-
-            dst_row0[(col << 1) + 0] = (uint8_t)c00;
-            dst_row0[(col << 1) + 1] = (uint8_t)c00;   // top == c00
-            dst_row1[(col << 1) + 0] = (uint8_t)left;
-            dst_row1[(col << 1) + 1] = (uint8_t)left;  // middle == left
-        }
-    }
-
-    // ---- last row: row replicated, cols 0..ch_cols-2 ----
-    row = ch_rows - 1;
-    {
-        const uint8_t *src_row = &src[row][0];
-        uint8_t *dst_row0 = &dst[(row << 1) + 0][0];
-        uint8_t *dst_row1 = &dst[(row << 1) + 1][0];
-
-        for (col = 0; col < ch_cols - 1; col++) {
-            int c00 = src_row[col], c01 = src_row[col + 1];
-            int top = (c00 + c01 + 1) >> 1;
-
-            dst_row0[(col << 1) + 0] = (uint8_t)c00;
-            dst_row0[(col << 1) + 1] = (uint8_t)top;
-            dst_row1[(col << 1) + 0] = (uint8_t)c00;  // left == c00
-            dst_row1[(col << 1) + 1] = (uint8_t)top;  // middle == top
-        }
-
-        // ---- bottom-right corner: single pixel replicated 4x ----
-        col = ch_cols - 1;
-        {
-            uint8_t v = src_row[col];
-            dst_row0[(col << 1) + 0] = v;
-            dst_row0[(col << 1) + 1] = v;
-            dst_row1[(col << 1) + 0] = v;
-            dst_row1[(col << 1) + 1] = v;
+            dst[out_r0+0][out_c0+0] = (uint8_t)tl;
+            dst[out_r0+0][out_c0+1] = (uint8_t)tr;
+            dst[out_r0+1][out_c0+0] = (uint8_t)bl;
+            dst[out_r0+1][out_c0+1] = (uint8_t)br;
         }
     }
 }
-
 // ---- Driver replacing chrominance_array_upsample() ----
 static void chrominance_array_upsample_neon( void)
 {
+#if CHROMINANCE_DOWNSAMPLING_MODE == 1
     chroma_plane_upsample_neon( Cb, Cb_temp);
     chroma_plane_upsample_neon( Cr, Cr_temp);
+#elif CHROMINANCE_DOWNSAMPLING_MODE == 2
+    chroma_plane_upsample_avg4( Cb, Cb_temp);
+    chroma_plane_upsample_avg4( Cr, Cr_temp);
+#else
+    #error "No matching NEON upsample implementation for this CHROMINANCE_DOWNSAMPLING_MODE"
+#endif
 }
 
 
