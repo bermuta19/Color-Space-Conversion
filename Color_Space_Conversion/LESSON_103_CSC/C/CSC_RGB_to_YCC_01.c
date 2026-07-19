@@ -2,7 +2,7 @@
 // Color Space Conversion (CSC) in fixed-point arithmetic
 // RGB to YCC conversion
 
-#include <stdio.h>
+//#include <stdio.h>
 #include <stdint.h>
 #include "CSC_global.h"
 #include <arm_neon.h>
@@ -357,7 +357,6 @@ void CSC_RGB_to_YCC( void) {
           }
           break;
         case 3:
-          printf("Using NEON-optimized RGB->YCC conversion\n");
           for( col=0; col<IMAGE_COL_SIZE; col+=8) { 
             CSC_RGB_to_YCC_vectors( row, col, y_base, c_base);
           }
