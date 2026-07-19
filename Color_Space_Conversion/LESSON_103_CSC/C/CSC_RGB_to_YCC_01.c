@@ -17,7 +17,7 @@ static void CSC_RGB_to_YCC_brute_force_float( int row, int col);
 static void CSC_RGB_to_YCC_brute_force_int( int row, int col);
 
 // =======
-static void CSC_RGB_to_YCC_vectors( int row, int col);
+static void CSC_RGB_to_YCC_vectors( int row, int col, uint16x8_t y_base, uint16x8_t c_base);
 // =======
 
 static uint8_t chrominance_downsample(
@@ -27,157 +27,106 @@ static uint8_t chrominance_downsample(
 // private definitions
 // =======
 
-static void CSC_RGB_to_YCC_vectors( int row, int col)
+static void CSC_RGB_to_YCC_vectors( int row, int col, uint16x8_t y_base, uint16x8_t c_base)
 {
-// ----------------------------------------------------
-// 1. LOAD 8 PIXELS AT ONCE FOR 2 ROWS AND PREPARE THEM FOR VECTOR MULTIPLICATION
-// ----------------------------------------------------
-  uint8x8_t r_row0, g_row0, b_row0, r_row1, g_row1, b_row1;
-  uint16x8_t r0_16, g0_16, b0_16, r1_16, g1_16, b1_16, y_base, c_base;
+  //----------------------------------------------------------------
+  //Processing row 0
+  //----------------------------------------------------------------
 
-  r_row0 = vld1_u8(&R[row][col]);
-  g_row0 = vld1_u8(&G[row][col]);
-  b_row0 = vld1_u8(&B[row][col]);
-
-  r_row1 = vld1_u8(&R[row + 1][col]);
-  g_row1 = vld1_u8(&G[row + 1][col]);
-  b_row1 = vld1_u8(&B[row + 1][col]);
-
-// upgrade to 16-bit for multiplication
-  r0_16 = vmovl_u8(r_row0);
-  g0_16 = vmovl_u8(g_row0);
-  b0_16 = vmovl_u8(b_row0);
-
-  r1_16 = vmovl_u8(r_row1);
-  g1_16 = vmovl_u8(g_row1);
-  b1_16 = vmovl_u8(b_row1);
-
-  // Constant initializers with rounding factor (1 << (K-1)) built-in
-  y_base = vdupq_n_u16((16 << K) + 128); //4,224 based on K=8
-  c_base = vdupq_n_u16((128 << K) + 128); //32,896 based on K=8
-
-// ----------------------------------------------------
-// 2. CALCULATING Y (LUMINANCE)
-// ----------------------------------------------------
-
-  //vector multiply-accumulate with scalar (adds rounding factor + constant to the product of C11 and the R vector)
+  //load 8 pixels from the R, G, and B arrays into NEON registers
+  uint8x8_t r_row0 = vld1_u8(&R[row][col]);
+  uint8x8_t g_row0 = vld1_u8(&G[row][col]);
+  uint8x8_t b_row0 = vld1_u8(&B[row][col]);
+  
+  // upgrade to 16-bit for multiplication
+  uint16x8_t r0_16 = vmovl_u8(r_row0);
+  uint16x8_t g0_16 = vmovl_u8(g_row0);
+  uint16x8_t b0_16 = vmovl_u8(b_row0);
+  
+  //multiplies the R vector by C11 and adds it to the y_base vector, storing the result in y_row0
   uint16x8_t y_row0 = vmlaq_n_u16(y_base, r0_16, (uint16_t)C11); 
-
   y_row0 = vmlaq_n_u16(y_row0, g0_16, (uint16_t)C12); //adds the product of C12 and the G vector to the previous result
   y_row0 = vmlaq_n_u16(y_row0, b0_16, (uint16_t)C13); //adds the product of C13 and the B vector to the previous result
-
-  uint16x8_t y_row1 = vmlaq_n_u16(y_base, r1_16, (uint16_t)C11);
-  y_row1 = vmlaq_n_u16(y_row1, g1_16, (uint16_t)C12);
-  y_row1 = vmlaq_n_u16(y_row1, b1_16, (uint16_t)C13);
-
-  //converts back into 8-bit representation and shifts back 8 bits
+  
+  //converts back into 8-bit representation and shifts back 8 bits to undo changes for the fixed-point representation
   uint8x8_t y_8bit_row0 = vshrn_n_u16(y_row0, K); 
-  uint8x8_t y_8bit_row1 = vshrn_n_u16(y_row1, K);
   
   //store the results back into the Y array
   vst1_u8(&Y[row][col], y_8bit_row0);
-  vst1_u8(&Y[row + 1][col], y_8bit_row1);
-
-// ----------------------------------------------------
-// 3. CALCULATING Cb (CHROMINANCE)
-// ----------------------------------------------------
-  uint16x8_t cb_row0, cb_row1;
-  uint8x8_t  cb_final_8bit;
-  uint16x4_t cb_downsampled;
-  uint16x8_t cb_avg;
-  uint32x4_t cb_pairwise_row0, cb_pairwise_row1, cb_combined;
   
-  
-  //vector multiplication and accumulation for Cb calculation | 32,896 + B*C23 - R*C21 - G*C22
-  cb_row0 = vmlaq_n_u16(c_base, b0_16, (uint16_t)C23);
+  //multiplies the B vector by C23 and adds it to the c_base vector, storing the result in cb_row0
+  uint16x8_t cb_row0 = vmlaq_n_u16(c_base, b0_16, (uint16_t)C23);
   cb_row0 = vmlsq_n_u16(cb_row0, r0_16, (uint16_t)C21);
   cb_row0 = vmlsq_n_u16(cb_row0, g0_16, (uint16_t)C22);
+  
+  //pairwise addition of the 16-bit values into 4 32-bit values.
+  uint32x4_t cb_pairwise_row0 = vpaddlq_u16(cb_row0); 
+  
+  //vector multiplication and accumulation for Cr calculation | 32,896 + R*C23 - G*C21 - B*C22
+  uint16x8_t cr_row0 = vmlaq_n_u16(c_base, r0_16, (uint16_t)C31);
+  cr_row0 = vmlsq_n_u16(cr_row0, g0_16, (uint16_t)C32);
+  cr_row0 = vmlsq_n_u16(cr_row0, b0_16, (uint16_t)C33);
+  
+  //pairwise addition of the 16-bit values into 4 32-bit values.
+  uint32x4_t cr_pairwise_row0 = vpaddlq_u16(cr_row0); 
 
-  cb_row1 = vmlaq_n_u16(c_base, b1_16, (uint16_t)C23);
+  //----------------------------------------------------------------
+  //End of row 0 processing, now process row 1
+  //----------------------------------------------------------------
+
+  //load 8 pixels from the R, G, and B arrays into NEON registers
+  uint8x8_t r_row1 = vld1_u8(&R[row + 1][col]);
+  uint8x8_t g_row1 = vld1_u8(&G[row + 1][col]);
+  uint8x8_t b_row1 = vld1_u8(&B[row + 1][col]);
+
+  // upgrade to 16-bit for multiplication
+  uint16x8_t r1_16 = vmovl_u8(r_row1);
+  uint16x8_t g1_16 = vmovl_u8(g_row1);
+  uint16x8_t b1_16 = vmovl_u8(b_row1);
+
+  //multiplies the R vector by C11 and adds it to the y_base vector, storing the result in y_row1
+  uint16x8_t y_row1 = vmlaq_n_u16(y_base, r1_16, (uint16_t)C11);
+  y_row1 = vmlaq_n_u16(y_row1, g1_16, (uint16_t)C12); //adds the product of C12 and the G vector to the previous result
+  y_row1 = vmlaq_n_u16(y_row1, b1_16, (uint16_t)C13); //adds the product of C13 and the B vector to the previous result
+
+  //converts back into 8-bit representation and shifts back 8 bits to undo changes for the fixed-point representation
+  uint8x8_t y_8bit_row1 = vshrn_n_u16(y_row1, K);
+  
+  //store the results back into the Y array
+  vst1_u8(&Y[row + 1][col], y_8bit_row1);
+
+  //vector multiplication and accumulation for Cb calculation | 32,896 + B*C23 - R*C21 - G*C22
+  uint16x8_t cb_row1 = vmlaq_n_u16(c_base, b1_16, (uint16_t)C23);
   cb_row1 = vmlsq_n_u16(cb_row1, r1_16, (uint16_t)C21);
   cb_row1 = vmlsq_n_u16(cb_row1, g1_16, (uint16_t)C22);
 
-  //pairwise addition of the 16-bit values into 4 32-bit values.
-  cb_pairwise_row0 = vpaddlq_u16(cb_row0); 
-  cb_pairwise_row1 = vpaddlq_u16(cb_row1);
+  //pairwise addition of the 8 16-bit values into 4 32-bit values.
+  uint32x4_t cb_pairwise_row1 = vpaddlq_u16(cb_row1);
 
-  //horizontal add of the two rows
-  cb_combined =  vaddq_u32(cb_pairwise_row0, cb_pairwise_row1); 
-
-  cb_downsampled = vshrn_n_u32(cb_combined, K); //divide by K to fix undo offset
-
-  //shift by 2 (divide by 4) and narrow from 16-bit down to 8-bit
-  cb_final_8bit = vshrn_n_u16(vcombine_u16(cb_downsampled, vcreate_u16(0)), 2);
-
-  // store into array
-  vst1_lane_u32((uint32_t*)&Cb[row>>1][col>>1], vreinterpret_u32_u8(cb_final_8bit), 0);
-
-  //converts back into 8-bit representation and shifts back 8 bits
-  // cb_8bit_row0 = vshrn_n_u16(cb_row0, K);
-  // cb_8bit_row1 = vshrn_n_u16(cb_row1, K);
-
-  // //horizontal add the two rows and divide by 2
-  // cb_avg =  vaddl_u8(cb_8bit_row0, cb_8bit_row1);
-  
-  // //pairwise addition of the 8-bit values into 4 16-bit values.
-  // cb_downsampled = vpaddl_u8(cb_avg);
-
-  // //vrshr_n_u16
-  // cb_downsampled = vshr_n_u16(cb_downsampled, 1); //divide by 2 again to get the average
-  
-  // // vst1_u8(&Cb[row>>1][col>>1], cb_downsampled); // save the downsampled Cb values into the Cb array
-  // vst1_lane_u32((uint32_t*)&Cb[row>>1][col>>1], vreinterpret_u32_u8(cb_downsampled),0);
-
-// ----------------------------------------------------
-// 3. CALCULATING Cr (CHROMINANCE)
-// ----------------------------------------------------
-
-  uint16x8_t cr_row0, cr_row1;
-  uint8x8_t  cr_final_8bit;
-  uint16x4_t cr_downsampled;
-  uint16x8_t cr_avg;
-  uint32x4_t cr_pairwise_row0, cr_pairwise_row1, cr_combined;
-
-  //vector multiplication and accumulation for Cr calculation | 32,896 + R*C23 - G*C21 - B*C22
-  cr_row0 = vmlaq_n_u16(c_base, r0_16, (uint16_t)C31);
-  cr_row0 = vmlsq_n_u16(cr_row0, g0_16, (uint16_t)C32);
-  cr_row0 = vmlsq_n_u16(cr_row0, b0_16, (uint16_t)C33);
-
-  cr_row1 = vmlaq_n_u16(c_base, r1_16, (uint16_t)C31);
+  //vector multiplication and accumulation for Cr calculation | 32,896 + R*C31 - G*C32 - B*C33
+  uint16x8_t cr_row1 = vmlaq_n_u16(c_base, r1_16, (uint16_t)C31);
   cr_row1 = vmlsq_n_u16(cr_row1, g1_16, (uint16_t)C32);
   cr_row1 = vmlsq_n_u16(cr_row1, b1_16, (uint16_t)C33);
 
-   //pairwise addition of the 16-bit values into 4 32-bit values.
-  cr_pairwise_row0 = vpaddlq_u16(cr_row0); 
-  cr_pairwise_row1 = vpaddlq_u16(cr_row1);
+  //pairwise addition of the 8 16-bit values into 4 32-bit values.
+  uint32x4_t cr_pairwise_row1 = vpaddlq_u16(cr_row1);
 
-  //horizontal add of the two rows
-  cr_combined =  vaddq_u32(cr_pairwise_row0, cr_pairwise_row1); 
+  //----------------------------------------------------------------
+  //Chrominance downsampling (average) and storing into the Cb and Cr arrays
+  //----------------------------------------------------------------
 
-  
-  cr_downsampled = vshrn_n_u32(cr_combined, K); //divide by K to undo offset
+  //downsampling cr
+  uint32x4_t cr_combined =  vaddq_u32(cr_pairwise_row0, cr_pairwise_row1); //horizontal add of the two rows
+  uint16x4_t cr_downsampled = vshrn_n_u32(cr_combined, K); //divide by K to undo offset
+  uint8x8_t cr_final_8bit = vshrn_n_u16(vcombine_u16(cr_downsampled, vcreate_u16(0)), 2); //shift by 2 (divide by 4) and narrow from 16-bit down to 8-bit
+  vst1_lane_u32((uint32_t*)&Cr[row>>1][col>>1], vreinterpret_u32_u8(cr_final_8bit), 0);   // store into Cr array
 
-  //shift by 2 (divide by 4) and narrow from 16-bit down to 8-bit
-  cr_final_8bit = vshrn_n_u16(vcombine_u16(cr_downsampled, vcreate_u16(0)), 2);
+   //downsampling cb
+  uint32x4_t cb_combined =  vaddq_u32(cb_pairwise_row0, cb_pairwise_row1); //horizontal add of the two rows
+  uint16x4_t cb_downsampled = vshrn_n_u32(cb_combined, K); //divide by K to undo offset
+  uint8x8_t cb_final_8bit = vshrn_n_u16(vcombine_u16(cb_downsampled, vcreate_u16(0)), 2); //shift by 2 (divide by 4) and narrow from 16-bit down to 8-bit
+  vst1_lane_u32((uint32_t*)&Cb[row>>1][col>>1], vreinterpret_u32_u8(cb_final_8bit), 0); // store into Cb array
 
-  // store into array
-  vst1_lane_u32((uint32_t*)&Cr[row>>1][col>>1], vreinterpret_u32_u8(cr_final_8bit), 0);
-
-  // //converts back into 8-bit representation and shifts back 8 bits
-  // cr_8bit_row0 = vshrn_n_u16(cr_row0, K);
-  // cr_8bit_row1 = vshrn_n_u16(cr_row1, K);
-
-  // //pairwise addition of the 8-bit values, resulting in 4 16-bit values
-  // cr_pairwise_row0 = vpaddl_u8(cr_8bit_row0);
-  // cr_pairwise_row1 = vpaddl_u8(cr_8bit_row1);
-
-  // //horizontal add of the two 16-bit vectors, resulting in 4 16-bit values
-  // cr_combined =  vhadd_u16(cr_pairwise_row0, cr_pairwise_row1);
-
-  // cr_combined = vshr_n_u16(cr_combined, 1); //divide by 4 to get the average
-
-  // // vst1_u8(&Cr[row>>1][col>>1], cr_downsampled);
-  // vst1_lane_u32((uint32_t*)&Cr[row>>1][col>>1], vreinterpret_u32_u8(cr_downsampled),0);
 }
 
 
@@ -378,6 +327,8 @@ static uint8_t chrominance_downsample(
 // =======
 void CSC_RGB_to_YCC( void) {
   int row, col; // indices for row and column
+  uint16x8_t y_base = vdupq_n_u16((16 << K) + 128); //4,224 based on K=8
+  uint16x8_t c_base = vdupq_n_u16((128 << K) + 128); //32,896 based on K=8
 //
   for( row=0; row<IMAGE_ROW_SIZE; row+=2) {
       //printf( "\n[row,col] = [%02i,%02i]\n\n", row, col);
@@ -396,7 +347,7 @@ void CSC_RGB_to_YCC( void) {
           break;
         case 3:
           for( col=0; col<IMAGE_COL_SIZE; col+=8) { 
-            CSC_RGB_to_YCC_vectors( row, col);
+            CSC_RGB_to_YCC_vectors( row, col, y_base, c_base);
           }
           break;
         default:
