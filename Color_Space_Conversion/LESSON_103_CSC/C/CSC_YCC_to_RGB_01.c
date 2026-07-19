@@ -610,6 +610,7 @@ void CSC_YCC_to_RGB( void) {
 
   
   if( YCC_to_RGB_ROUTINE == 4) {
+    printf("Using NEON-optimized YCC->RGB conversion\n");
     chrominance_array_upsample_neon();
     CSC_YCC_to_RGB_neon(IMAGE_ROW_SIZE, IMAGE_COL_SIZE);
     return;
