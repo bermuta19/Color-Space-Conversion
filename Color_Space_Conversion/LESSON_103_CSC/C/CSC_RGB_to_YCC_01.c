@@ -26,94 +26,49 @@ static uint8_t chrominance_downsample(
 
 // private definitions
 // =======
-
 static void CSC_RGB_to_YCC_vectors( int row, int col, uint16x8_t y_base, uint16x8_t c_base)
 {
   //----------------------------------------------------------------
-  //Processing row 0
+  //Processing row 0 (Y is always computed the same way regardless
+  //of chrominance downsampling mode)
   //----------------------------------------------------------------
 
-  //load 8 pixels from the R, G, and B arrays into NEON registers
   uint8x8_t r_row0 = vld1_u8(&R[row][col]);
   uint8x8_t g_row0 = vld1_u8(&G[row][col]);
   uint8x8_t b_row0 = vld1_u8(&B[row][col]);
-  
-  // upgrade to 16-bit for multiplication
+
   uint16x8_t r0_16 = vmovl_u8(r_row0);
   uint16x8_t g0_16 = vmovl_u8(g_row0);
   uint16x8_t b0_16 = vmovl_u8(b_row0);
-  
-  //multiplies the R vector by C11 and adds it to the y_base vector, storing the result in y_row0
-  uint16x8_t y_row0 = vmlaq_n_u16(y_base, r0_16, (uint16_t)C11); 
-  y_row0 = vmlaq_n_u16(y_row0, g0_16, (uint16_t)C12); //adds the product of C12 and the G vector to the previous result
-  y_row0 = vmlaq_n_u16(y_row0, b0_16, (uint16_t)C13); //adds the product of C13 and the B vector to the previous result
-  
-  //converts back into 8-bit representation and shifts back 8 bits to undo changes for the fixed-point representation
-  uint8x8_t y_8bit_row0 = vshrn_n_u16(y_row0, K); 
-  
-  //store the results back into the Y array
+
+  uint16x8_t y_row0 = vmlaq_n_u16(y_base, r0_16, (uint16_t)C11);
+  y_row0 = vmlaq_n_u16(y_row0, g0_16, (uint16_t)C12);
+  y_row0 = vmlaq_n_u16(y_row0, b0_16, (uint16_t)C13);
+  uint8x8_t y_8bit_row0 = vshrn_n_u16(y_row0, K);
   vst1_u8(&Y[row][col], y_8bit_row0);
-  
-  //multiplies the B vector by C23 and adds it to the c_base vector, storing the result in cb_row0
-  uint16x8_t cb_row0 = vmlaq_n_u16(c_base, b0_16, (uint16_t)C23);
-  cb_row0 = vmlsq_n_u16(cb_row0, r0_16, (uint16_t)C21);
-  cb_row0 = vmlsq_n_u16(cb_row0, g0_16, (uint16_t)C22);
-  
-  //pairwise addition of the 16-bit values into 4 32-bit values.
-  uint32x4_t cb_pairwise_row0 = vpaddlq_u16(cb_row0); 
-  
-  //vector multiplication and accumulation for Cr calculation | 32,896 + R*C23 - G*C21 - B*C22
-  uint16x8_t cr_row0 = vmlaq_n_u16(c_base, r0_16, (uint16_t)C31);
-  cr_row0 = vmlsq_n_u16(cr_row0, g0_16, (uint16_t)C32);
-  cr_row0 = vmlsq_n_u16(cr_row0, b0_16, (uint16_t)C33);
-  
-  //pairwise addition of the 16-bit values into 4 32-bit values.
-  uint32x4_t cr_pairwise_row0 = vpaddlq_u16(cr_row0); 
 
   //----------------------------------------------------------------
-  //End of row 0 processing, now process row 1
+  //Row 1
   //----------------------------------------------------------------
 
-  //load 8 pixels from the R, G, and B arrays into NEON registers
   uint8x8_t r_row1 = vld1_u8(&R[row + 1][col]);
   uint8x8_t g_row1 = vld1_u8(&G[row + 1][col]);
   uint8x8_t b_row1 = vld1_u8(&B[row + 1][col]);
 
-  // upgrade to 16-bit for multiplication
   uint16x8_t r1_16 = vmovl_u8(r_row1);
   uint16x8_t g1_16 = vmovl_u8(g_row1);
   uint16x8_t b1_16 = vmovl_u8(b_row1);
 
-  //multiplies the R vector by C11 and adds it to the y_base vector, storing the result in y_row1
   uint16x8_t y_row1 = vmlaq_n_u16(y_base, r1_16, (uint16_t)C11);
-  y_row1 = vmlaq_n_u16(y_row1, g1_16, (uint16_t)C12); //adds the product of C12 and the G vector to the previous result
-  y_row1 = vmlaq_n_u16(y_row1, b1_16, (uint16_t)C13); //adds the product of C13 and the B vector to the previous result
-
-  //converts back into 8-bit representation and shifts back 8 bits to undo changes for the fixed-point representation
+  y_row1 = vmlaq_n_u16(y_row1, g1_16, (uint16_t)C12);
+  y_row1 = vmlaq_n_u16(y_row1, b1_16, (uint16_t)C13);
   uint8x8_t y_8bit_row1 = vshrn_n_u16(y_row1, K);
-  
-  //store the results back into the Y array
   vst1_u8(&Y[row + 1][col], y_8bit_row1);
 
-  //vector multiplication and accumulation for Cb calculation | 32,896 + B*C23 - R*C21 - G*C22
-  uint16x8_t cb_row1 = vmlaq_n_u16(c_base, b1_16, (uint16_t)C23);
-  cb_row1 = vmlsq_n_u16(cb_row1, r1_16, (uint16_t)C21);
-  cb_row1 = vmlsq_n_u16(cb_row1, g1_16, (uint16_t)C22);
-
-  //pairwise addition of the 8 16-bit values into 4 32-bit values.
-  uint32x4_t cb_pairwise_row1 = vpaddlq_u16(cb_row1);
-
-  //vector multiplication and accumulation for Cr calculation | 32,896 + R*C31 - G*C32 - B*C33
-  uint16x8_t cr_row1 = vmlaq_n_u16(c_base, r1_16, (uint16_t)C31);
-  cr_row1 = vmlsq_n_u16(cr_row1, g1_16, (uint16_t)C32);
-  cr_row1 = vmlsq_n_u16(cr_row1, b1_16, (uint16_t)C33);
-
-  //pairwise addition of the 8 16-bit values into 4 32-bit values.
-  uint32x4_t cr_pairwise_row1 = vpaddlq_u16(cr_row1);
-
   //----------------------------------------------------------------
-  //Chrominance downsampling (average) and storing into the Cb and Cr arrays
+  //Chrominance: behavior selected by CHROMINANCE_DOWNSAMPLING_MODE
   //----------------------------------------------------------------
+
 #if CHROMINANCE_DOWNSAMPLING_MODE == 0
   // ---- mode 0: no chrominance, write zero ----
   uint8x8_t zero8 = vdup_n_u8(0);
@@ -185,7 +140,6 @@ static void CSC_RGB_to_YCC_vectors( int row, int col, uint16x8_t y_base, uint16x
   #error "Unsupported CHROMINANCE_DOWNSAMPLING_MODE for NEON path"
 #endif
 }
-
 
 static void CSC_RGB_to_YCC_brute_force_float( int row, int col) {
 //
