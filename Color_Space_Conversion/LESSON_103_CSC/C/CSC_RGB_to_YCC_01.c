@@ -126,7 +126,6 @@ static void CSC_RGB_to_YCC_vectors( int row, int col, uint16x8_t y_base, uint16x
   uint16x4_t cb_downsampled = vshrn_n_u32(cb_combined, K); //divide by K to undo offset
   uint8x8_t cb_final_8bit = vshrn_n_u16(vcombine_u16(cb_downsampled, vcreate_u16(0)), 2); //shift by 2 (divide by 4) and narrow from 16-bit down to 8-bit
   vst1_lane_u32((uint32_t*)&Cb[row>>1][col>>1], vreinterpret_u32_u8(cb_final_8bit), 0); // store into Cb array
-
 }
 
 
