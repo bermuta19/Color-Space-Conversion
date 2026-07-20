@@ -33,6 +33,9 @@ static void chrominance_upsample(
 // =======
 static void chrominance_array_upsample( void);
 
+static void chroma_upsample_neon_8( const uint8_t *Cp0, const uint8_t *Cp1,
+                                    uint8_t *Cp_out0, uint8_t *Cp_out1);
+
 //TODO verify
 
 // D1..D5 and K are assumed to be the same compile-time constants used by
