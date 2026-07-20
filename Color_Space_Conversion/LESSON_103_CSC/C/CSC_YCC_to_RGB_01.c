@@ -478,52 +478,115 @@ static void chrominance_array_upsample( void) {
   Cr_temp[(row<<1)+1][(col<<1)+1] = Cr[row][col];
 
 } // END of chrominance_array_upsample()
-
 static void CSC_YCC_to_RGB_neon_fused( void)
 {
     const int ch_rows = IMAGE_ROW_SIZE >> 1;
     const int ch_cols = IMAGE_COL_SIZE >> 1;
 
-    // small, reused every iteration -> stays hot in L1, never touches DRAM twice
-    uint8_t cb_strip0[IMAGE_COL_SIZE], cb_strip1[IMAGE_COL_SIZE];
-    uint8_t cr_strip0[IMAGE_COL_SIZE], cr_strip1[IMAGE_COL_SIZE];
+    uint8_t cb_strip0[IMAGE_COL_SIZE];
+    uint8_t cb_strip1[IMAGE_COL_SIZE];
+    uint8_t cr_strip0[IMAGE_COL_SIZE];
+    uint8_t cr_strip1[IMAGE_COL_SIZE];
 
     for (int crow = 0; crow < ch_rows; crow++) {
-        int row = crow << 1;
-        int next = (crow + 1 < ch_rows) ? crow + 1 : crow;  // clamp at bottom edge
+        int row  = crow << 1;
+        int next = (crow + 1 < ch_rows) ? (crow + 1) : crow;  // clamp/replicate at bottom edge
 
-        // --- upsample just this row-pair's chroma into the strips ---
-        int col = 0;
-        for (; col + 8 <= ch_cols - 1; col += 8) {
-            chroma_upsample_neon_8( &Cb[crow][col], &Cb[next][col],
-                                     cb_strip0 + (col << 1), cb_strip1 + (col << 1));
-            chroma_upsample_neon_8( &Cr[crow][col], &Cr[next][col],
-                                     cr_strip0 + (col << 1), cr_strip1 + (col << 1));
-        }
-        for (; col < ch_cols - 1; col++) {
-            // ...same scalar interpolation as before, writing into
-            // cb_strip0/cb_strip1/cr_strip0/cr_strip1 instead of the big arrays
-        }
-        // ...last-column edge case, same as before, into the strips
+        const uint8_t *cb_row0 = &Cb[crow][0];
+        const uint8_t *cb_row1 = &Cb[next][0];
+        const uint8_t *cr_row0 = &Cr[crow][0];
+        const uint8_t *cr_row1 = &Cr[next][0];
 
-        // --- immediately consume the strip while it's still hot ---
+        //------------------------------------------------------------
+        // Upsample this row-pair's chroma into the small strips.
+        // Every one of the IMAGE_COL_SIZE strip entries gets written
+        // exactly once below -- interior loop covers columns
+        // 0..(ch_cols-2), the block after it covers the final column.
+        //------------------------------------------------------------
+        int col;
+        for (col = 0; col < ch_cols - 1; col++) {
+            int cb00 = cb_row0[col], cb01 = cb_row0[col + 1];
+            int cb10 = cb_row1[col], cb11 = cb_row1[col + 1];
+            int cr00 = cr_row0[col], cr01 = cr_row0[col + 1];
+            int cr10 = cr_row1[col], cr11 = cr_row1[col + 1];
+
+            int cb_top    = (cb00 + cb01 + 1) >> 1;
+            int cb_left   = (cb00 + cb10 + 1) >> 1;
+            int cb_middle = (cb00 + cb01 + cb10 + cb11 + 2) >> 2;
+
+            int cr_top    = (cr00 + cr01 + 1) >> 1;
+            int cr_left   = (cr00 + cr10 + 1) >> 1;
+            int cr_middle = (cr00 + cr01 + cr10 + cr11 + 2) >> 2;
+
+            int oc = col << 1;
+            cb_strip0[oc + 0] = (uint8_t)cb00;
+            cb_strip0[oc + 1] = (uint8_t)cb_top;
+            cb_strip1[oc + 0] = (uint8_t)cb_left;
+            cb_strip1[oc + 1] = (uint8_t)cb_middle;
+
+            cr_strip0[oc + 0] = (uint8_t)cr00;
+            cr_strip0[oc + 1] = (uint8_t)cr_top;
+            cr_strip1[oc + 0] = (uint8_t)cr_left;
+            cr_strip1[oc + 1] = (uint8_t)cr_middle;
+        }
+
+        // ---- last chroma column: no right-hand neighbor, replicate horizontally ----
+        {
+            int lc = ch_cols - 1;
+            int oc = lc << 1;
+
+            int cb00 = cb_row0[lc], cb10 = cb_row1[lc];
+            int cr00 = cr_row0[lc], cr10 = cr_row1[lc];
+            int cb_left = (cb00 + cb10 + 1) >> 1;
+            int cr_left = (cr00 + cr10 + 1) >> 1;
+
+            cb_strip0[oc + 0] = (uint8_t)cb00;
+            cb_strip0[oc + 1] = (uint8_t)cb00;
+            cb_strip1[oc + 0] = (uint8_t)cb_left;
+            cb_strip1[oc + 1] = (uint8_t)cb_left;
+
+            cr_strip0[oc + 0] = (uint8_t)cr00;
+            cr_strip0[oc + 1] = (uint8_t)cr00;
+            cr_strip1[oc + 0] = (uint8_t)cr_left;
+            cr_strip1[oc + 1] = (uint8_t)cr_left;
+        }
+
+        //------------------------------------------------------------
+        // Consume the strip immediately while it's still hot in L1.
+        //------------------------------------------------------------
         const uint8_t *Yp0 = &Y[row][0];
         const uint8_t *Yp1 = &Y[row + 1][0];
         uint8_t *Rp0 = &R[row][0], *Gp0 = &G[row][0], *Bp0 = &B[row][0];
-        uint8_t *Rp1 = &R[row+1][0], *Gp1 = &G[row+1][0], *Bp1 = &B[row+1][0];
+        uint8_t *Rp1 = &R[row + 1][0], *Gp1 = &G[row + 1][0], *Bp1 = &B[row + 1][0];
 
         int c = 0;
         for (; c + 8 <= IMAGE_COL_SIZE; c += 8) {
             CSC_YCC_to_RGB_neon_8( Yp0 + c, cb_strip0 + c, cr_strip0 + c, Rp0 + c, Gp0 + c, Bp0 + c);
             CSC_YCC_to_RGB_neon_8( Yp1 + c, cb_strip1 + c, cr_strip1 + c, Rp1 + c, Gp1 + c, Bp1 + c);
         }
+
+        // scalar remainder, identical math to CSC_YCC_to_RGB_neon's tail loop
         for (; c < IMAGE_COL_SIZE; c++) {
-            // ...scalar remainder, same math as your existing tail loop,
-            // reading cb_strip0[c]/cr_strip0[c] etc. instead of Cb_temp[row][c]
+            int y0 = (int)Yp0[c] - 16,  y1 = (int)Yp1[c] - 16;
+            int cb0 = (int)cb_strip0[c] - 128, cb1 = (int)cb_strip1[c] - 128;
+            int cr0 = (int)cr_strip0[c] - 128, cr1 = (int)cr_strip1[c] - 128;
+
+            int r0 = D1 * y0 + D2 * cr0;                r0 += (1 << (K - 1)); r0 >>= K;
+            int g0 = D1 * y0 - D3 * cr0 - D4 * cb0;      g0 += (1 << (K - 1)); g0 >>= K;
+            int b0 = D1 * y0 + D5 * cb0;                 b0 += (1 << (K - 1)); b0 >>= K;
+            Rp0[c] = saturate_to_u8(r0);
+            Gp0[c] = saturate_to_u8(g0);
+            Bp0[c] = saturate_to_u8(b0);
+
+            int r1 = D1 * y1 + D2 * cr1;                r1 += (1 << (K - 1)); r1 >>= K;
+            int g1 = D1 * y1 - D3 * cr1 - D4 * cb1;      g1 += (1 << (K - 1)); g1 >>= K;
+            int b1 = D1 * y1 + D5 * cb1;                 b1 += (1 << (K - 1)); b1 >>= K;
+            Rp1[c] = saturate_to_u8(r1);
+            Gp1[c] = saturate_to_u8(g1);
+            Bp1[c] = saturate_to_u8(b1);
         }
     }
 }
-
 
 // Processes 8 consecutive interior chroma columns for one row-pair
 // (row, row+1) of ONE plane (call once for Cb, once for Cr).
