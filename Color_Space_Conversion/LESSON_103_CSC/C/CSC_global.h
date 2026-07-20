@@ -52,13 +52,13 @@
 //     0 for returning zero (no chrominance)
 //     1 for discarding three pixels and keeping one
 //     2 for averaging four pixels
-#define CHROMINANCE_DOWNSAMPLING_MODE 1
+#define CHROMINANCE_DOWNSAMPLING_MODE 2
 
 // CHROMINANCE_UPSAMPLING_MODE = 
 //     0 for returning zero (no chrominance)
 //     1 for replicating one pixel into three
 //     2 for interpolation with two pixels
-#define CHROMINANCE_UPSAMPLING_MODE 1
+#define CHROMINANCE_UPSAMPLING_MODE 2
 
 // RGB-to-YCC coefficients in 8-bit representation
 #define C11  66
