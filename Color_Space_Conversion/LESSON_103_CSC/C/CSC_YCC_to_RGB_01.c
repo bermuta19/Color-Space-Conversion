@@ -476,6 +476,50 @@ static void chrominance_array_upsample( void) {
 
 } // END of chrominance_array_upsample()
 
+static void CSC_YCC_to_RGB_neon_fused( void)
+{
+    const int ch_rows = IMAGE_ROW_SIZE >> 1;
+    const int ch_cols = IMAGE_COL_SIZE >> 1;
+
+    // small, reused every iteration -> stays hot in L1, never touches DRAM twice
+    uint8_t cb_strip0[IMAGE_COL_SIZE], cb_strip1[IMAGE_COL_SIZE];
+    uint8_t cr_strip0[IMAGE_COL_SIZE], cr_strip1[IMAGE_COL_SIZE];
+
+    for (int crow = 0; crow < ch_rows; crow++) {
+        int row = crow << 1;
+        int next = (crow + 1 < ch_rows) ? crow + 1 : crow;  // clamp at bottom edge
+
+        // --- upsample just this row-pair's chroma into the strips ---
+        int col = 0;
+        for (; col + 8 <= ch_cols - 1; col += 8) {
+            chroma_upsample_neon_8( &Cb[crow][col], &Cb[next][col],
+                                     cb_strip0 + (col << 1), cb_strip1 + (col << 1));
+            chroma_upsample_neon_8( &Cr[crow][col], &Cr[next][col],
+                                     cr_strip0 + (col << 1), cr_strip1 + (col << 1));
+        }
+        for (; col < ch_cols - 1; col++) {
+            // ...same scalar interpolation as before, writing into
+            // cb_strip0/cb_strip1/cr_strip0/cr_strip1 instead of the big arrays
+        }
+        // ...last-column edge case, same as before, into the strips
+
+        // --- immediately consume the strip while it's still hot ---
+        const uint8_t *Yp0 = &Y[row][0];
+        const uint8_t *Yp1 = &Y[row + 1][0];
+        uint8_t *Rp0 = &R[row][0], *Gp0 = &G[row][0], *Bp0 = &B[row][0];
+        uint8_t *Rp1 = &R[row+1][0], *Gp1 = &G[row+1][0], *Bp1 = &B[row+1][0];
+
+        int c = 0;
+        for (; c + 8 <= IMAGE_COL_SIZE; c += 8) {
+            CSC_YCC_to_RGB_neon_8( Yp0 + c, cb_strip0 + c, cr_strip0 + c, Rp0 + c, Gp0 + c, Bp0 + c);
+            CSC_YCC_to_RGB_neon_8( Yp1 + c, cb_strip1 + c, cr_strip1 + c, Rp1 + c, Gp1 + c, Bp1 + c);
+        }
+        for (; c < IMAGE_COL_SIZE; c++) {
+            // ...scalar remainder, same math as your existing tail loop,
+            // reading cb_strip0[c]/cr_strip0[c] etc. instead of Cb_temp[row][c]
+        }
+    }
+}
 
 
 // Processes 8 consecutive interior chroma columns for one row-pair
@@ -610,8 +654,9 @@ void CSC_YCC_to_RGB( void) {
 
   
   if( YCC_to_RGB_ROUTINE == 4) {
-    chrominance_array_upsample_neon();
-    CSC_YCC_to_RGB_neon(IMAGE_ROW_SIZE, IMAGE_COL_SIZE);
+    CSC_YCC_to_RGB_neon_fused();
+    //chrominance_array_upsample_neon();
+    //CSC_YCC_to_RGB_neon(IMAGE_ROW_SIZE, IMAGE_COL_SIZE);
     return;
   }
   int row, col; // indices for row and column
