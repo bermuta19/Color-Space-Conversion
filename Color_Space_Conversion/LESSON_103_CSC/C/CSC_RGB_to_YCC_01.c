@@ -17,7 +17,7 @@ static void CSC_RGB_to_YCC_brute_force_float( int row, int col);
 static void CSC_RGB_to_YCC_brute_force_int( int row, int col);
 
 // =======
-static void CSC_RGB_to_YCC_vectors( int row, int col, uint16x8_t y_base, uint16x8_t c_base);
+static void CSC_RGB_to_YCC_vectors( int row, int col, uint16x8_t y_base, uint16x8_t c_base, int chroma_mode);
 // =======
 
 static uint8_t chrominance_downsample(
@@ -326,9 +326,10 @@ void CSC_RGB_to_YCC( void) {
           }
           break;
         case 3:
-          for( col=0; col<IMAGE_COL_SIZE; col+=8) {
-            CSC_RGB_to_YCC_vectors( row, col, y_base, c_base, CHROMINANCE_DOWNSAMPLING_MODE);
-          }
+      for( col=0; col<IMAGE_COL_SIZE; col+=8) {
+        CSC_RGB_to_YCC_vectors( row, col, y_base, c_base, CHROMINANCE_DOWNSAMPLING_MODE);
+      }
+      break;
           break;
         default:
           break;
