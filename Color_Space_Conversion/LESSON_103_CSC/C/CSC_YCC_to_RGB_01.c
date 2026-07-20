@@ -566,6 +566,86 @@ static void chroma_plane_upsample_avg4(
         }
     }
 }
+
+static void chroma_plane_upsample_neon( const uint8_t src[IMAGE_ROW_SIZE>>1][IMAGE_COL_SIZE>>1],
+                                         uint8_t dst[IMAGE_ROW_SIZE][IMAGE_COL_SIZE])
+{
+    int row, col;
+    const int ch_rows = (IMAGE_ROW_SIZE >> 1);
+    const int ch_cols = (IMAGE_COL_SIZE >> 1);
+
+    // ---- interior rows/cols, 8 columns at a time ----
+    for (row = 0; row < ch_rows - 1; row++) {
+
+        const uint8_t *src_row0 = &src[row][0];
+        const uint8_t *src_row1 = &src[row + 1][0];
+        uint8_t *dst_row0 = &dst[(row << 1) + 0][0];
+        uint8_t *dst_row1 = &dst[(row << 1) + 1][0];
+
+        col = 0;
+        for (; col + 8 <= ch_cols - 1; col += 8) {
+            chroma_upsample_neon_8( src_row0 + col, src_row1 + col,
+                                    dst_row0 + (col << 1),
+                                    dst_row1 + (col << 1));
+        }
+
+        // scalar remainder (interior columns left over, < 8 of them)
+        for (; col < ch_cols - 1; col++) {
+            int c00 = src_row0[col],     c01 = src_row0[col + 1];
+            int c10 = src_row1[col],     c11 = src_row1[col + 1];
+
+            int top    = (c00 + c01 + 1) >> 1;
+            int left   = (c00 + c10 + 1) >> 1;
+            int middle = (c00 + c01 + c10 + c11 + 2) >> 2;
+
+            dst_row0[(col << 1) + 0] = (uint8_t)c00;
+            dst_row0[(col << 1) + 1] = (uint8_t)top;
+            dst_row1[(col << 1) + 0] = (uint8_t)left;
+            dst_row1[(col << 1) + 1] = (uint8_t)middle;
+        }
+
+        // ---- last column of this row-pair: col replicated ----
+        col = ch_cols - 1;
+        {
+            int c00 = src_row0[col], c10 = src_row1[col];
+            int left = (c00 + c10 + 1) >> 1;
+
+            dst_row0[(col << 1) + 0] = (uint8_t)c00;
+            dst_row0[(col << 1) + 1] = (uint8_t)c00;   // top == c00
+            dst_row1[(col << 1) + 0] = (uint8_t)left;
+            dst_row1[(col << 1) + 1] = (uint8_t)left;  // middle == left
+        }
+    }
+
+    // ---- last row: row replicated, cols 0..ch_cols-2 ----
+    row = ch_rows - 1;
+    {
+        const uint8_t *src_row = &src[row][0];
+        uint8_t *dst_row0 = &dst[(row << 1) + 0][0];
+        uint8_t *dst_row1 = &dst[(row << 1) + 1][0];
+
+        for (col = 0; col < ch_cols - 1; col++) {
+            int c00 = src_row[col], c01 = src_row[col + 1];
+            int top = (c00 + c01 + 1) >> 1;
+
+            dst_row0[(col << 1) + 0] = (uint8_t)c00;
+            dst_row0[(col << 1) + 1] = (uint8_t)top;
+            dst_row1[(col << 1) + 0] = (uint8_t)c00;  // left == c00
+            dst_row1[(col << 1) + 1] = (uint8_t)top;  // middle == top
+        }
+
+        // ---- bottom-right corner: single pixel replicated 4x ----
+        col = ch_cols - 1;
+        {
+            uint8_t v = src_row[col];
+            dst_row0[(col << 1) + 0] = v;
+            dst_row0[(col << 1) + 1] = v;
+            dst_row1[(col << 1) + 0] = v;
+            dst_row1[(col << 1) + 1] = v;
+        }
+    }
+}
+
 // ---- Driver replacing chrominance_array_upsample() ----
 static void chrominance_array_upsample_neon( void)
 {
