@@ -23,16 +23,15 @@ static void CSC_RGB_to_YCC_vectors( int row, int col, uint16x8_t y_base, uint16x
 static uint8_t chrominance_downsample(
     uint8_t C_pixel_1, uint8_t C_pixel_2,
     uint8_t C_pixel_3, uint8_t C_pixel_4);
-    
-static void CSC_RGB_to_YCC_vectors( int row, int col, uint16x8_t y_base, uint16x8_t c_base)
+    static void CSC_RGB_to_YCC_vectors( int row, int col, uint16x8_t y_base,
+                                     uint16x8_t c_base, int chroma_mode)
 {
   //----------------------------------------------------------------
-  // Row 0
+  // Load + widen both rows (needed for Y regardless of chroma mode)
   //----------------------------------------------------------------
   uint8x8_t r_row0 = vld1_u8(&R[row][col]);
   uint8x8_t g_row0 = vld1_u8(&G[row][col]);
   uint8x8_t b_row0 = vld1_u8(&B[row][col]);
-
   uint16x8_t r0_16 = vmovl_u8(r_row0);
   uint16x8_t g0_16 = vmovl_u8(g_row0);
   uint16x8_t b0_16 = vmovl_u8(b_row0);
@@ -40,26 +39,11 @@ static void CSC_RGB_to_YCC_vectors( int row, int col, uint16x8_t y_base, uint16x
   uint16x8_t y_row0 = vmlaq_n_u16(y_base, r0_16, (uint16_t)C11);
   y_row0 = vmlaq_n_u16(y_row0, g0_16, (uint16_t)C12);
   y_row0 = vmlaq_n_u16(y_row0, b0_16, (uint16_t)C13);
-  uint8x8_t y_8bit_row0 = vshrn_n_u16(y_row0, K);
-  vst1_u8(&Y[row][col], y_8bit_row0);
+  vst1_u8(&Y[row][col], vshrn_n_u16(y_row0, K));
 
-  uint16x8_t cb_row0 = vmlaq_n_u16(c_base, b0_16, (uint16_t)C23);
-  cb_row0 = vmlsq_n_u16(cb_row0, r0_16, (uint16_t)C21);
-  cb_row0 = vmlsq_n_u16(cb_row0, g0_16, (uint16_t)C22);
-  uint8x8_t cb_8bit_row0 = vshrn_n_u16(cb_row0, K);   // rounded per-pixel Cb (== Cb_temp)
-
-  uint16x8_t cr_row0 = vmlaq_n_u16(c_base, r0_16, (uint16_t)C31);
-  cr_row0 = vmlsq_n_u16(cr_row0, g0_16, (uint16_t)C32);
-  cr_row0 = vmlsq_n_u16(cr_row0, b0_16, (uint16_t)C33);
-  uint8x8_t cr_8bit_row0 = vshrn_n_u16(cr_row0, K);   // rounded per-pixel Cr (== Cr_temp)
-
-  //----------------------------------------------------------------
-  // Row 1
-  //----------------------------------------------------------------
   uint8x8_t r_row1 = vld1_u8(&R[row + 1][col]);
   uint8x8_t g_row1 = vld1_u8(&G[row + 1][col]);
   uint8x8_t b_row1 = vld1_u8(&B[row + 1][col]);
-
   uint16x8_t r1_16 = vmovl_u8(r_row1);
   uint16x8_t g1_16 = vmovl_u8(g_row1);
   uint16x8_t b1_16 = vmovl_u8(b_row1);
@@ -67,38 +51,63 @@ static void CSC_RGB_to_YCC_vectors( int row, int col, uint16x8_t y_base, uint16x
   uint16x8_t y_row1 = vmlaq_n_u16(y_base, r1_16, (uint16_t)C11);
   y_row1 = vmlaq_n_u16(y_row1, g1_16, (uint16_t)C12);
   y_row1 = vmlaq_n_u16(y_row1, b1_16, (uint16_t)C13);
-  uint8x8_t y_8bit_row1 = vshrn_n_u16(y_row1, K);
-  vst1_u8(&Y[row + 1][col], y_8bit_row1);
+  vst1_u8(&Y[row + 1][col], vshrn_n_u16(y_row1, K));
 
-  uint16x8_t cb_row1 = vmlaq_n_u16(c_base, b1_16, (uint16_t)C23);
-  cb_row1 = vmlsq_n_u16(cb_row1, r1_16, (uint16_t)C21);
-  cb_row1 = vmlsq_n_u16(cb_row1, g1_16, (uint16_t)C22);
-  uint8x8_t cb_8bit_row1 = vshrn_n_u16(cb_row1, K);
+  if (chroma_mode == 2)
+  {
+    //----------------------------------------------------------------
+    // MODE 2: box average. Sum R/G/B over the 2x2 block FIRST, then
+    // run the color-matrix multiply once instead of twice-then-average.
+    // Roughly halves the chroma MAC work vs computing Cb/Cr per row.
+    //----------------------------------------------------------------
+    uint16x8_t r_colsum = vaddq_u16(r0_16, r1_16);   // max 510, safe in u16
+    uint16x8_t g_colsum = vaddq_u16(g0_16, g1_16);
+    uint16x8_t b_colsum = vaddq_u16(b0_16, b1_16);
 
-  uint16x8_t cr_row1 = vmlaq_n_u16(c_base, r1_16, (uint16_t)C31);
-  cr_row1 = vmlsq_n_u16(cr_row1, g1_16, (uint16_t)C32);
-  cr_row1 = vmlsq_n_u16(cr_row1, b1_16, (uint16_t)C33);
-  uint8x8_t cr_8bit_row1 = vshrn_n_u16(cr_row1, K);
+    uint32x4_t r_block = vpaddlq_u16(r_colsum);      // sum of 4 pixels, max 1020
+    uint32x4_t g_block = vpaddlq_u16(g_colsum);
+    uint32x4_t b_block = vpaddlq_u16(b_colsum);
 
-  //----------------------------------------------------------------
-  // 2x2 box average with correct rounding
-  //----------------------------------------------------------------
-  // sum row0 + row1 per column (widens 8-bit -> 16-bit, no overflow risk)
-  uint16x8_t cb_col_sum = vaddl_u8(cb_8bit_row0, cb_8bit_row1);
-  uint16x8_t cr_col_sum = vaddl_u8(cr_8bit_row0, cr_8bit_row1);
+    // 4 copies of the DC offset + rounding bias for a single (K+2)-bit shift
+    const uint32_t cbase4 = ((uint32_t)128 << K) * 4 + (1u << (K + 1));
+    uint32x4_t cbase4_vec = vdupq_n_u32(cbase4);
 
-  // pairwise-add adjacent columns: (col,col+1)->block0 ... (col+6,col+7)->block3
-  uint16x4_t cb_block_sum = vpadd_u16(vget_low_u16(cb_col_sum), vget_high_u16(cb_col_sum));
-  uint16x4_t cr_block_sum = vpadd_u16(vget_low_u16(cr_col_sum), vget_high_u16(cr_col_sum));
+    uint32x4_t cb32 = vmlaq_n_u32(cbase4_vec, b_block, (uint32_t)C23);
+    cb32 = vmlsq_n_u32(cb32, r_block, (uint32_t)C21);
+    cb32 = vmlsq_n_u32(cb32, g_block, (uint32_t)C22);
+    uint16x4_t cb16 = vshrn_n_u32(cb32, K + 2);       // rounded average, 0-255
 
-  // pack Cb and Cr sums together so one instruction finishes both
-  uint16x8_t combined_sum = vcombine_u16(cb_block_sum, cr_block_sum);
+    uint32x4_t cr32 = vmlaq_n_u32(cbase4_vec, r_block, (uint32_t)C31);
+    cr32 = vmlsq_n_u32(cr32, g_block, (uint32_t)C32);
+    cr32 = vmlsq_n_u32(cr32, b_block, (uint32_t)C33);
+    uint16x4_t cr16 = vshrn_n_u32(cr32, K + 2);
 
-  // round(sum/4), narrow 16-bit -> 8-bit, all in one instruction
-  uint8x8_t cb_cr_final = vrshrn_n_u16(combined_sum, 2);
+    uint8x8_t cb_cr_final = vmovn_u16(vcombine_u16(cb16, cr16));
+    vst1_lane_u32((uint32_t*)&Cb[row>>1][col>>1], vreinterpret_u32_u8(cb_cr_final), 0);
+    vst1_lane_u32((uint32_t*)&Cr[row>>1][col>>1], vreinterpret_u32_u8(cb_cr_final), 1);
+  }
+  else
+  {
+    //----------------------------------------------------------------
+    // MODE 1: drop. Keep only the top-left pixel of each 2x2 block;
+    // row1's chroma is never computed at all.
+    //----------------------------------------------------------------
+    uint16x8_t cb_row0 = vmlaq_n_u16(c_base, b0_16, (uint16_t)C23);
+    cb_row0 = vmlsq_n_u16(cb_row0, r0_16, (uint16_t)C21);
+    cb_row0 = vmlsq_n_u16(cb_row0, g0_16, (uint16_t)C22);
+    uint8x8_t cb_8bit_row0 = vshrn_n_u16(cb_row0, K);
 
-  vst1_lane_u32((uint32_t*)&Cb[row>>1][col>>1], vreinterpret_u32_u8(cb_cr_final), 0);
-  vst1_lane_u32((uint32_t*)&Cr[row>>1][col>>1], vreinterpret_u32_u8(cb_cr_final), 1);
+    uint16x8_t cr_row0 = vmlaq_n_u16(c_base, r0_16, (uint16_t)C31);
+    cr_row0 = vmlsq_n_u16(cr_row0, g0_16, (uint16_t)C32);
+    cr_row0 = vmlsq_n_u16(cr_row0, b0_16, (uint16_t)C33);
+    uint8x8_t cr_8bit_row0 = vshrn_n_u16(cr_row0, K);
+
+    uint8x8x2_t cb_deint = vuzp_u8(cb_8bit_row0, cb_8bit_row0);
+    vst1_lane_u32((uint32_t*)&Cb[row>>1][col>>1], vreinterpret_u32_u8(cb_deint.val[0]), 0);
+
+    uint8x8x2_t cr_deint = vuzp_u8(cr_8bit_row0, cr_8bit_row0);
+    vst1_lane_u32((uint32_t*)&Cr[row>>1][col>>1], vreinterpret_u32_u8(cr_deint.val[0]), 0);
+  }
 }
 
 static void CSC_RGB_to_YCC_brute_force_float( int row, int col) {
@@ -317,8 +326,8 @@ void CSC_RGB_to_YCC( void) {
           }
           break;
         case 3:
-          for( col=0; col<IMAGE_COL_SIZE; col+=8) { 
-            CSC_RGB_to_YCC_vectors( row, col, y_base, c_base);
+          for( col=0; col<IMAGE_COL_SIZE; col+=8) {
+            CSC_RGB_to_YCC_vectors( row, col, y_base, c_base, CHROMINANCE_DOWNSAMPLING_MODE);
           }
           break;
         default:
