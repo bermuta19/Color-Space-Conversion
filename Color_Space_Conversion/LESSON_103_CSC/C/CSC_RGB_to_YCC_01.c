@@ -337,13 +337,7 @@ void CSC_RGB_to_YCC( void) {
           break;
       }
       // after a full CSC_RGB_to_YCC() run on the real striped test image
-      printf("R/G/B[300][200..207]:\n");
-      for (int c = 3; c < 20; c++)
-        printf("  (%d,%d,%d)\n", R[300][c], G[300][c], B[300][c]);
 
-      printf("Cb/Cr[150][100..103]:\n");
-      for (int c = 3; c < 20; c++)
-        printf("  Cb=%d Cr=%d\n", Cb[150][c], Cr[150][c]);
 //      printf( "Luma_00  = %02hhx\n", Y[row+0][col+0]);
 //      printf( "Luma_01  = %02hhx\n", Y[row+0][col+1]);
 //      printf( "Luma_10  = %02hhx\n", Y[row+1][col+0]);
