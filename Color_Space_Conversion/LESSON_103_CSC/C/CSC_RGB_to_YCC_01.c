@@ -23,6 +23,7 @@ static void CSC_RGB_to_YCC_vectors( int row, int col, uint16x8_t y_base, uint16x
 static uint8_t chrominance_downsample(
     uint8_t C_pixel_1, uint8_t C_pixel_2,
     uint8_t C_pixel_3, uint8_t C_pixel_4);
+
     static void CSC_RGB_to_YCC_vectors( int row, int col, uint16x8_t y_base,
                                      uint16x8_t c_base, int chroma_mode)
 {
@@ -52,7 +53,7 @@ static uint8_t chrominance_downsample(
   y_row1 = vmlaq_n_u16(y_row1, g1_16, (uint16_t)C12);
   y_row1 = vmlaq_n_u16(y_row1, b1_16, (uint16_t)C13);
   vst1_u8(&Y[row + 1][col], vshrn_n_u16(y_row1, K));
-
+  /*
   if (chroma_mode == 2)
   {
     //----------------------------------------------------------------
@@ -88,6 +89,7 @@ static uint8_t chrominance_downsample(
   }
   else
   {
+  */
     //----------------------------------------------------------------
     // MODE 1: drop. Keep only the top-left pixel of each 2x2 block;
     // row1's chroma is never computed at all.
@@ -107,7 +109,7 @@ static uint8_t chrominance_downsample(
 
     uint8x8x2_t cr_deint = vuzp_u8(cr_8bit_row0, cr_8bit_row0);
     vst1_lane_u32((uint32_t*)&Cr[row>>1][col>>1], vreinterpret_u32_u8(cr_deint.val[0]), 0);
-  }
+  //}
 }
 
 static void CSC_RGB_to_YCC_brute_force_float( int row, int col) {
