@@ -490,21 +490,32 @@ static void CSC_YCC_to_RGB_neon_fused( void)
 
     for (int crow = 0; crow < ch_rows; crow++) {
         int row  = crow << 1;
-        int next = (crow + 1 < ch_rows) ? (crow + 1) : crow;  // clamp/replicate at bottom edge
+        int next = (crow + 1 < ch_rows) ? (crow + 1) : crow;
 
         const uint8_t *cb_row0 = &Cb[crow][0];
         const uint8_t *cb_row1 = &Cb[next][0];
         const uint8_t *cr_row0 = &Cr[crow][0];
         const uint8_t *cr_row1 = &Cr[next][0];
 
+        int col = 0;
+
         //------------------------------------------------------------
-        // Upsample this row-pair's chroma into the small strips.
-        // Every one of the IMAGE_COL_SIZE strip entries gets written
-        // exactly once below -- interior loop covers columns
-        // 0..(ch_cols-2), the block after it covers the final column.
+        // Vectorized interior: 8 chroma columns (-> 16 luma columns)
+        // per call. chroma_upsample_neon_8 writes the same interleaved
+        // C00/top/left/middle layout the scalar loop below used to
+        // build by hand, so the consumer (CSC_YCC_to_RGB_neon_8 below)
+        // needs no changes at all.
         //------------------------------------------------------------
-        int col;
-        for (col = 0; col < ch_cols - 1; col++) {
+        for (; col + 8 <= ch_cols - 1; col += 8) {
+            int oc = col << 1;
+            chroma_upsample_neon_8( cb_row0 + col, cb_row1 + col,
+                                    cb_strip0 + oc, cb_strip1 + oc);
+            chroma_upsample_neon_8( cr_row0 + col, cr_row1 + col,
+                                    cr_strip0 + oc, cr_strip1 + oc);
+        }
+
+        // ---- scalar remainder: interior columns left over (< 8 of them) ----
+        for (; col < ch_cols - 1; col++) {
             int cb00 = cb_row0[col], cb01 = cb_row0[col + 1];
             int cb10 = cb_row1[col], cb11 = cb_row1[col + 1];
             int cr00 = cr_row0[col], cr01 = cr_row0[col + 1];
@@ -530,7 +541,7 @@ static void CSC_YCC_to_RGB_neon_fused( void)
             cr_strip1[oc + 1] = (uint8_t)cr_middle;
         }
 
-        // ---- last chroma column: no right-hand neighbor, replicate horizontally ----
+        // ---- last chroma column: replicate horizontally, unchanged ----
         {
             int lc = ch_cols - 1;
             int oc = lc << 1;
@@ -551,9 +562,7 @@ static void CSC_YCC_to_RGB_neon_fused( void)
             cr_strip1[oc + 1] = (uint8_t)cr_left;
         }
 
-        //------------------------------------------------------------
-        // Consume the strip immediately while it's still hot in L1.
-        //------------------------------------------------------------
+        // ---- consume the strip immediately while hot in L1 (unchanged) ----
         const uint8_t *Yp0 = &Y[row][0];
         const uint8_t *Yp1 = &Y[row + 1][0];
         uint8_t *Rp0 = &R[row][0], *Gp0 = &G[row][0], *Bp0 = &B[row][0];
@@ -565,7 +574,6 @@ static void CSC_YCC_to_RGB_neon_fused( void)
             CSC_YCC_to_RGB_neon_8( Yp1 + c, cb_strip1 + c, cr_strip1 + c, Rp1 + c, Gp1 + c, Bp1 + c);
         }
 
-        // scalar remainder, identical math to CSC_YCC_to_RGB_neon's tail loop
         for (; c < IMAGE_COL_SIZE; c++) {
             int y0 = (int)Yp0[c] - 16,  y1 = (int)Yp1[c] - 16;
             int cb0 = (int)cb_strip0[c] - 128, cb1 = (int)cb_strip1[c] - 128;
