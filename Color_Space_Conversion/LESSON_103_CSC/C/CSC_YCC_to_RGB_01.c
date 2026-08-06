@@ -36,23 +36,15 @@ static void chrominance_array_upsample( void);
 static void chroma_upsample_neon_8( const uint8_t *Cp0, const uint8_t *Cp1,
                                     uint8_t *Cp_out0, uint8_t *Cp_out1);
 
-//TODO verify
-
-// D1..D5 and K are assumed to be the same compile-time constants used by
-// the scalar version. K MUST be a compile-time immediate (1..32) because
-// vshrq_n_s32 requires an immediate shift amount.
-// D1..D5, K: same fixed-point constants as the scalar version.
-// K must be a compile-time immediate (vshrq_n_s32 requires it).
-static inline void CSC_YCC_to_RGB_neon_8( const uint8_t *Yp,
-                                           const uint8_t *Cbp,
-                                           const uint8_t *Crp,
-                                           uint8_t *Rp,
-                                           uint8_t *Gp,
-                                           uint8_t *Bp)
+// Fused core: takes already-loaded 8-lane Y/Cb/Cr vectors, returns R/G/B
+// vectors. No loads, no stores -- pure register-to-register, meant to be
+// inlined directly into the fused pipeline below.
+static inline void color_matrix_neon_8( uint8x8_t y8, uint8x8_t cb8, uint8x8_t cr8,
+                                         uint8x8_t *r8, uint8x8_t *g8, uint8x8_t *b8)
 {
-    int16x8_t y16  = vreinterpretq_s16_u16(vmovl_u8(vld1_u8(Yp)));
-    int16x8_t cb16 = vreinterpretq_s16_u16(vmovl_u8(vld1_u8(Cbp)));
-    int16x8_t cr16 = vreinterpretq_s16_u16(vmovl_u8(vld1_u8(Crp)));
+    int16x8_t y16  = vreinterpretq_s16_u16(vmovl_u8(y8));
+    int16x8_t cb16 = vreinterpretq_s16_u16(vmovl_u8(cb8));
+    int16x8_t cr16 = vreinterpretq_s16_u16(vmovl_u8(cr8));
 
     y16  = vsubq_s16(y16,  vdupq_n_s16(16));
     cb16 = vsubq_s16(cb16, vdupq_n_s16(128));
@@ -65,48 +57,48 @@ static inline void CSC_YCC_to_RGB_neon_8( const uint8_t *Yp,
     int32x4_t cr_lo = vmovl_s16(vget_low_s16(cr16));
     int32x4_t cr_hi = vmovl_s16(vget_high_s16(cr16));
 
-    const int32x4_t d2    = vdupq_n_s32(D2);
-    const int32x4_t d3    = vdupq_n_s32(D3);
-    const int32x4_t d4    = vdupq_n_s32(D4);
-    const int32x4_t d5    = vdupq_n_s32(D5);
-    const int32x4_t round = vdupq_n_s32(1 << (K - 1));
-
-    // D1*Y computed ONCE and reused for R, G, and B.
-    // Previously this was vmulq_s32(d1, y_lo/y_hi), recomputed inside
-    // each of the three branches below -- three redundant vector
-    // multiplies per call, six counting the _hi half.
+    // D1*Y computed once, reused for R, G, and B -- was 3x redundant before.
     int32x4_t dy_lo = vmulq_n_s32(y_lo, D1);
     int32x4_t dy_hi = vmulq_n_s32(y_hi, D1);
 
-    // ---- R = dy + D2*Cr, +round, >>K ----
-    int32x4_t r_lo = vmlaq_s32(dy_lo, d2, cr_lo);
-    int32x4_t r_hi = vmlaq_s32(dy_hi, d2, cr_hi);
-    r_lo = vshrq_n_s32(vaddq_s32(r_lo, round), K);
-    r_hi = vshrq_n_s32(vaddq_s32(r_hi, round), K);
+    // R = dy + D2*Cr  -- vmlaq_n_s32 folds the *D2 directly, no dup'd
+    // constant register needed. vrshrq_n_s32 is a single rounding
+    // shift-right instruction, replacing "+round; >>K".
+    int32x4_t r_lo = vrshrq_n_s32(vmlaq_n_s32(dy_lo, cr_lo, D2), K);
+    int32x4_t r_hi = vrshrq_n_s32(vmlaq_n_s32(dy_hi, cr_hi, D2), K);
 
-    // ---- G = dy - D3*Cr - D4*Cb, +round, >>K ----
-    int32x4_t g_lo = vmlsq_s32(vmlsq_s32(dy_lo, d3, cr_lo), d4, cb_lo);
-    int32x4_t g_hi = vmlsq_s32(vmlsq_s32(dy_hi, d3, cr_hi), d4, cb_hi);
-    g_lo = vshrq_n_s32(vaddq_s32(g_lo, round), K);
-    g_hi = vshrq_n_s32(vaddq_s32(g_hi, round), K);
+    // G = dy - D3*Cr - D4*Cb
+    int32x4_t g_lo = vrshrq_n_s32(vmlsq_n_s32(vmlsq_n_s32(dy_lo, cr_lo, D3), cb_lo, D4), K);
+    int32x4_t g_hi = vrshrq_n_s32(vmlsq_n_s32(vmlsq_n_s32(dy_hi, cr_hi, D3), cb_hi, D4), K);
 
-    // ---- B = dy + D5*Cb, +round, >>K ----
-    int32x4_t b_lo = vmlaq_s32(dy_lo, d5, cb_lo);
-    int32x4_t b_hi = vmlaq_s32(dy_hi, d5, cb_hi);
-    b_lo = vshrq_n_s32(vaddq_s32(b_lo, round), K);
-    b_hi = vshrq_n_s32(vaddq_s32(b_hi, round), K);
+    // B = dy + D5*Cb
+    int32x4_t b_lo = vrshrq_n_s32(vmlaq_n_s32(dy_lo, cb_lo, D5), K);
+    int32x4_t b_hi = vrshrq_n_s32(vmlaq_n_s32(dy_hi, cb_hi, D5), K);
 
     int16x8_t r16 = vcombine_s16(vqmovn_s32(r_lo), vqmovn_s32(r_hi));
     int16x8_t g16 = vcombine_s16(vqmovn_s32(g_lo), vqmovn_s32(g_hi));
     int16x8_t b16 = vcombine_s16(vqmovn_s32(b_lo), vqmovn_s32(b_hi));
 
-    uint8x8_t r8 = vqmovun_s16(r16);
-    uint8x8_t g8 = vqmovun_s16(g16);
-    uint8x8_t b8 = vqmovun_s16(b16);
+    *r8 = vqmovun_s16(r16);
+    *g8 = vqmovun_s16(g16);
+    *b8 = vqmovun_s16(b16);
+}
 
-    vst1_u8(Rp, r8);
-    vst1_u8(Gp, g8);
-    vst1_u8(Bp, b8);
+// Thin pointer-based wrapper, kept so any other caller (e.g. the older
+// CSC_YCC_to_RGB_neon() bulk-row routine, if you still build it) keeps
+// working unchanged. Not used by the fused pipeline below.
+static inline void CSC_YCC_to_RGB_neon_8( const uint8_t *Yp,
+                                           const uint8_t *Cbp,
+                                           const uint8_t *Crp,
+                                           uint8_t *Rp,
+                                           uint8_t *Gp,
+                                           uint8_t *Bp)
+{
+    uint8_t r8[8], g8[8], b8[8];
+    uint8x8_t r, g, b;
+    color_matrix_neon_8( vld1_u8(Yp), vld1_u8(Cbp), vld1_u8(Crp), &r, &g, &b);
+    vst1_u8(Rp, r); vst1_u8(Gp, g); vst1_u8(Bp, b);
+    (void)r8; (void)g8; (void)b8;  // (r8/g8/b8 unused -- vst1 writes directly)
 }
 
 // Same math as chroma_upsample_neon_8, but takes the "row0" vectors
@@ -505,119 +497,111 @@ static void chrominance_array_upsample( void) {
   Cr_temp[(row<<1)+1][(col<<1)+1] = Cr[row][col];
 
 } // END of chrominance_array_upsample()
+
 #define CHROMA_BLOCKS ( ((IMAGE_COL_SIZE >> 1) / 8) + 2 )  // small safety margin
+// Scalar fallback for the tail: whatever interior chroma columns don't
+// fill a full 8-wide block, plus the replicated last column. Computes
+// one pixel's R/G/B directly -- no strip buffer involved.
+static inline void set_rgb_pixel( int row, int col, int Yv, int Cbv, int Crv)
+{
+    int y = Yv - 16, cb = Cbv - 128, cr = Crv - 128;
+
+    int r = D1 * y + D2 * cr;                r += (1 << (K - 1)); r >>= K;
+    int g = D1 * y - D3 * cr - D4 * cb;       g += (1 << (K - 1)); g >>= K;
+    int b = D1 * y + D5 * cb;                 b += (1 << (K - 1)); b >>= K;
+
+    R[row][col] = saturate_to_u8(r);
+    G[row][col] = saturate_to_u8(g);
+    B[row][col] = saturate_to_u8(b);
+}
 
 static void CSC_YCC_to_RGB_neon_fused( void)
 {
     const int ch_rows = IMAGE_ROW_SIZE >> 1;
     const int ch_cols = IMAGE_COL_SIZE >> 1;
 
-    uint8_t cb_strip0[IMAGE_COL_SIZE];
-    uint8_t cb_strip1[IMAGE_COL_SIZE];
-    uint8_t cr_strip0[IMAGE_COL_SIZE];
-    uint8_t cr_strip1[IMAGE_COL_SIZE];
-
-    // Cache of this row's already-loaded chroma vectors, one pair per
-    // 8-wide block, carried forward so next iteration's "row0" load
-    // of the same bytes is skipped.
-    static uint8x8_t cb_cache_c0[CHROMA_BLOCKS], cb_cache_c1[CHROMA_BLOCKS];
-    static uint8x8_t cr_cache_c0[CHROMA_BLOCKS], cr_cache_c1[CHROMA_BLOCKS];
-    int cache_valid = 0;
-
     for (int crow = 0; crow < ch_rows; crow++) {
         int row  = crow << 1;
         int next = (crow + 1 < ch_rows) ? (crow + 1) : crow;
 
-        const uint8_t *cb_row1 = &Cb[next][0];
-        const uint8_t *cr_row1 = &Cr[next][0];
+        int col = 0;
 
-        int col, blk;
-        for (col = 0, blk = 0; col + 8 <= ch_cols - 1; col += 8, blk++) {
-            int oc = col << 1;
-            uint8x8_t cb_c0, cb_c1, cr_c0, cr_c1;
+        // ---- vectorized interior: 8 chroma cols -> 16 luma cols per block ----
+        for (; col + 8 <= ch_cols - 1; col += 8) {
+            int lcol = col << 1;
 
-            if (cache_valid) {
-                cb_c0 = cb_cache_c0[blk];
-                cb_c1 = cb_cache_c1[blk];
-                cr_c0 = cr_cache_c0[blk];
-                cr_c1 = cr_cache_c1[blk];
-            } else {
-                cb_c0 = vld1_u8(&Cb[crow][col]);
-                cb_c1 = vld1_u8(&Cb[crow][col + 1]);
-                cr_c0 = vld1_u8(&Cr[crow][col]);
-                cr_c1 = vld1_u8(&Cr[crow][col + 1]);
-            }
+            uint8x8_t cb00 = vld1_u8(&Cb[crow][col]);
+            uint8x8_t cb01 = vld1_u8(&Cb[crow][col + 1]);
+            uint8x8_t cb10 = vld1_u8(&Cb[next][col]);
+            uint8x8_t cb11 = vld1_u8(&Cb[next][col + 1]);
 
-            chroma_upsample_neon_8_cached( cb_c0, cb_c1, cb_row1 + col,
-                                            cb_strip0 + oc, cb_strip1 + oc,
-                                            &cb_cache_c0[blk], &cb_cache_c1[blk]);
-            chroma_upsample_neon_8_cached( cr_c0, cr_c1, cr_row1 + col,
-                                            cr_strip0 + oc, cr_strip1 + oc,
-                                            &cr_cache_c0[blk], &cr_cache_c1[blk]);
+            uint8x8_t cr00 = vld1_u8(&Cr[crow][col]);
+            uint8x8_t cr01 = vld1_u8(&Cr[crow][col + 1]);
+            uint8x8_t cr10 = vld1_u8(&Cr[next][col]);
+            uint8x8_t cr11 = vld1_u8(&Cr[next][col + 1]);
+
+            // 4 chroma variants per plane, kept in registers -- never stored.
+            uint8x8_t cb_top    = vrhadd_u8(cb00, cb01);
+            uint8x8_t cb_left   = vrhadd_u8(cb00, cb10);
+            uint16x8_t cb_sum   = vaddq_u16(vaddl_u8(cb00, cb01), vaddl_u8(cb10, cb11));
+            uint8x8_t cb_middle = vmovn_u16(vshrq_n_u16(vaddq_u16(cb_sum, vdupq_n_u16(2)), 2));
+
+            uint8x8_t cr_top    = vrhadd_u8(cr00, cr01);
+            uint8x8_t cr_left   = vrhadd_u8(cr00, cr10);
+            uint16x8_t cr_sum   = vaddq_u16(vaddl_u8(cr00, cr01), vaddl_u8(cr10, cr11));
+            uint8x8_t cr_middle = vmovn_u16(vshrq_n_u16(vaddq_u16(cr_sum, vdupq_n_u16(2)), 2));
+
+            // Y loaded already de-interleaved into even/odd luma columns --
+            // aligns 1:1 with the chroma variants above with no extra work.
+            uint8x8x2_t y_row0 = vld2_u8(&Y[row][lcol]);
+            uint8x8x2_t y_row1 = vld2_u8(&Y[row + 1][lcol]);
+
+            // ---- row0: even cols use cb00/cr00, odd cols use cb_top/cr_top ----
+            uint8x8_t r0e, g0e, b0e, r0o, g0o, b0o;
+            color_matrix_neon_8( y_row0.val[0], cb00,   cr00,   &r0e, &g0e, &b0e);
+            color_matrix_neon_8( y_row0.val[1], cb_top, cr_top, &r0o, &g0o, &b0o);
+
+            uint8x8x2_t r0 = {{ r0e, r0o }}; vst2_u8(&R[row][lcol], r0);
+            uint8x8x2_t g0 = {{ g0e, g0o }}; vst2_u8(&G[row][lcol], g0);
+            uint8x8x2_t b0 = {{ b0e, b0o }}; vst2_u8(&B[row][lcol], b0);
+
+            // ---- row1: even cols use cb_left/cr_left, odd cols use cb_middle/cr_middle ----
+            uint8x8_t r1e, g1e, b1e, r1o, g1o, b1o;
+            color_matrix_neon_8( y_row1.val[0], cb_left,   cr_left,   &r1e, &g1e, &b1e);
+            color_matrix_neon_8( y_row1.val[1], cb_middle, cr_middle, &r1o, &g1o, &b1o);
+
+            uint8x8x2_t r1 = {{ r1e, r1o }}; vst2_u8(&R[row + 1][lcol], r1);
+            uint8x8x2_t g1 = {{ g1e, g1o }}; vst2_u8(&G[row + 1][lcol], g1);
+            uint8x8x2_t b1 = {{ b1e, b1o }}; vst2_u8(&B[row + 1][lcol], b1);
         }
-        cache_valid = 1;
 
-        // ---- scalar remainder: interior columns left over (< 8 of them) ----
-        for (; col < ch_cols - 1; col++) {
-            int cb00 = Cb[crow][col], cb01 = Cb[crow][col + 1];
-            int cb10 = Cb[next][col], cb11 = Cb[next][col + 1];
-            int cr00 = Cr[crow][col], cr01 = Cr[crow][col + 1];
-            int cr10 = Cr[next][col], cr11 = Cr[next][col + 1];
+        // ---- scalar tail: leftover interior columns + replicated last column ----
+        for (; col < ch_cols; col++) {
+            int lcol = col << 1;
+            int has_right = (col + 1 < ch_cols);
+
+            int cb00 = Cb[crow][col];
+            int cb01 = has_right ? Cb[crow][col + 1] : cb00;
+            int cb10 = Cb[next][col];
+            int cb11 = has_right ? Cb[next][col + 1] : cb10;
+
+            int cr00 = Cr[crow][col];
+            int cr01 = has_right ? Cr[crow][col + 1] : cr00;
+            int cr10 = Cr[next][col];
+            int cr11 = has_right ? Cr[next][col + 1] : cr10;
 
             int cb_top    = (cb00 + cb01 + 1) >> 1;
             int cb_left   = (cb00 + cb10 + 1) >> 1;
             int cb_middle = (cb00 + cb01 + cb10 + cb11 + 2) >> 2;
+
             int cr_top    = (cr00 + cr01 + 1) >> 1;
             int cr_left   = (cr00 + cr10 + 1) >> 1;
             int cr_middle = (cr00 + cr01 + cr10 + cr11 + 2) >> 2;
 
-            int oc = col << 1;
-            cb_strip0[oc + 0] = (uint8_t)cb00;   cb_strip0[oc + 1] = (uint8_t)cb_top;
-            cb_strip1[oc + 0] = (uint8_t)cb_left; cb_strip1[oc + 1] = (uint8_t)cb_middle;
-            cr_strip0[oc + 0] = (uint8_t)cr00;   cr_strip0[oc + 1] = (uint8_t)cr_top;
-            cr_strip1[oc + 0] = (uint8_t)cr_left; cr_strip1[oc + 1] = (uint8_t)cr_middle;
-        }
-
-        // ---- last chroma column: replicate horizontally ----
-        {
-            int lc = ch_cols - 1;
-            int oc = lc << 1;
-            int cb00 = Cb[crow][lc], cb10 = Cb[next][lc];
-            int cr00 = Cr[crow][lc], cr10 = Cr[next][lc];
-            int cb_left = (cb00 + cb10 + 1) >> 1;
-            int cr_left = (cr00 + cr10 + 1) >> 1;
-
-            cb_strip0[oc + 0] = (uint8_t)cb00;    cb_strip0[oc + 1] = (uint8_t)cb00;
-            cb_strip1[oc + 0] = (uint8_t)cb_left; cb_strip1[oc + 1] = (uint8_t)cb_left;
-            cr_strip0[oc + 0] = (uint8_t)cr00;    cr_strip0[oc + 1] = (uint8_t)cr00;
-            cr_strip1[oc + 0] = (uint8_t)cr_left; cr_strip1[oc + 1] = (uint8_t)cr_left;
-        }
-
-        // ---- consume the strip immediately while hot in L1 (unchanged) ----
-        const uint8_t *Yp0 = &Y[row][0];
-        const uint8_t *Yp1 = &Y[row + 1][0];
-        uint8_t *Rp0 = &R[row][0], *Gp0 = &G[row][0], *Bp0 = &B[row][0];
-        uint8_t *Rp1 = &R[row + 1][0], *Gp1 = &G[row + 1][0], *Bp1 = &B[row + 1][0];
-
-        int c = 0;
-        for (; c + 8 <= IMAGE_COL_SIZE; c += 8) {
-            CSC_YCC_to_RGB_neon_8( Yp0 + c, cb_strip0 + c, cr_strip0 + c, Rp0 + c, Gp0 + c, Bp0 + c);
-            CSC_YCC_to_RGB_neon_8( Yp1 + c, cb_strip1 + c, cr_strip1 + c, Rp1 + c, Gp1 + c, Bp1 + c);
-        }
-        for (; c < IMAGE_COL_SIZE; c++) {
-            int y0 = (int)Yp0[c] - 16,  y1 = (int)Yp1[c] - 16;
-            int cb0 = (int)cb_strip0[c] - 128, cb1 = (int)cb_strip1[c] - 128;
-            int cr0 = (int)cr_strip0[c] - 128, cr1 = (int)cr_strip1[c] - 128;
-
-            int r0 = D1 * y0 + D2 * cr0;                r0 += (1 << (K - 1)); r0 >>= K;
-            int g0 = D1 * y0 - D3 * cr0 - D4 * cb0;      g0 += (1 << (K - 1)); g0 >>= K;
-            int b0 = D1 * y0 + D5 * cb0;                 b0 += (1 << (K - 1)); b0 >>= K;
-            Rp0[c] = saturate_to_u8(r0); Gp0[c] = saturate_to_u8(g0); Bp0[c] = saturate_to_u8(b0);
-
-            int r1 = D1 * y1 + D2 * cr1;                r1 += (1 << (K - 1)); r1 >>= K;
-            int g1 = D1 * y1 - D3 * cr1 - D4 * cb1;      g1 += (1 << (K - 1)); g1 >>= K;
-            int b1 = D1 * y1 + D5 * cb1;                 b1 += (1 << (K - 1)); b1 >>= K;
-            Rp1[c] = saturate_to_u8(r1); Gp1[c] = saturate_to_u8(g1); Bp1[c] = saturate_to_u8(b1);
+            set_rgb_pixel( row,     lcol,     Y[row][lcol],       cb00,      cr00);
+            set_rgb_pixel( row,     lcol + 1, Y[row][lcol + 1],   cb_top,    cr_top);
+            set_rgb_pixel( row + 1, lcol,     Y[row + 1][lcol],   cb_left,   cr_left);
+            set_rgb_pixel( row + 1, lcol + 1, Y[row + 1][lcol + 1], cb_middle, cr_middle);
         }
     }
 }
