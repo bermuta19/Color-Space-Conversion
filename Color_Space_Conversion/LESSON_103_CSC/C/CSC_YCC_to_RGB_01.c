@@ -43,7 +43,6 @@ static void chroma_upsample_neon_8( const uint8_t *Cp0, const uint8_t *Cp1,
 // vshrq_n_s32 requires an immediate shift amount.
 // D1..D5, K: same fixed-point constants as the scalar version.
 // K must be a compile-time immediate (vshrq_n_s32 requires it).
-
 static inline void CSC_YCC_to_RGB_neon_8( const uint8_t *Yp,
                                            const uint8_t *Cbp,
                                            const uint8_t *Crp,
@@ -51,7 +50,6 @@ static inline void CSC_YCC_to_RGB_neon_8( const uint8_t *Yp,
                                            uint8_t *Gp,
                                            uint8_t *Bp)
 {
-    // ---- load 8 pixels, widen u8 -> s16 -> s32 ----
     int16x8_t y16  = vreinterpretq_s16_u16(vmovl_u8(vld1_u8(Yp)));
     int16x8_t cb16 = vreinterpretq_s16_u16(vmovl_u8(vld1_u8(Cbp)));
     int16x8_t cr16 = vreinterpretq_s16_u16(vmovl_u8(vld1_u8(Crp)));
@@ -67,37 +65,37 @@ static inline void CSC_YCC_to_RGB_neon_8( const uint8_t *Yp,
     int32x4_t cr_lo = vmovl_s16(vget_low_s16(cr16));
     int32x4_t cr_hi = vmovl_s16(vget_high_s16(cr16));
 
-    const int32x4_t d1    = vdupq_n_s32(D1);
     const int32x4_t d2    = vdupq_n_s32(D2);
     const int32x4_t d3    = vdupq_n_s32(D3);
     const int32x4_t d4    = vdupq_n_s32(D4);
     const int32x4_t d5    = vdupq_n_s32(D5);
     const int32x4_t round = vdupq_n_s32(1 << (K - 1));
 
-    // ---- R = D1*Y + D2*Cr, +round, >>K ----
-    int32x4_t r_lo = vmlaq_s32(vmulq_s32(d1, y_lo), d2, cr_lo);
-    int32x4_t r_hi = vmlaq_s32(vmulq_s32(d1, y_hi), d2, cr_hi);
+    // D1*Y computed ONCE and reused for R, G, and B.
+    // Previously this was vmulq_s32(d1, y_lo/y_hi), recomputed inside
+    // each of the three branches below -- three redundant vector
+    // multiplies per call, six counting the _hi half.
+    int32x4_t dy_lo = vmulq_n_s32(y_lo, D1);
+    int32x4_t dy_hi = vmulq_n_s32(y_hi, D1);
+
+    // ---- R = dy + D2*Cr, +round, >>K ----
+    int32x4_t r_lo = vmlaq_s32(dy_lo, d2, cr_lo);
+    int32x4_t r_hi = vmlaq_s32(dy_hi, d2, cr_hi);
     r_lo = vshrq_n_s32(vaddq_s32(r_lo, round), K);
     r_hi = vshrq_n_s32(vaddq_s32(r_hi, round), K);
 
-    // ---- G = D1*Y - D3*Cr - D4*Cb, +round, >>K ----
-    int32x4_t g_lo = vmlsq_s32(vmlsq_s32(vmulq_s32(d1, y_lo), d3, cr_lo), d4, cb_lo);
-    int32x4_t g_hi = vmlsq_s32(vmlsq_s32(vmulq_s32(d1, y_hi), d3, cr_hi), d4, cb_hi);
+    // ---- G = dy - D3*Cr - D4*Cb, +round, >>K ----
+    int32x4_t g_lo = vmlsq_s32(vmlsq_s32(dy_lo, d3, cr_lo), d4, cb_lo);
+    int32x4_t g_hi = vmlsq_s32(vmlsq_s32(dy_hi, d3, cr_hi), d4, cb_hi);
     g_lo = vshrq_n_s32(vaddq_s32(g_lo, round), K);
     g_hi = vshrq_n_s32(vaddq_s32(g_hi, round), K);
 
-    // ---- B = D1*Y + D5*Cb, +round, >>K ----
-    int32x4_t b_lo = vmlaq_s32(vmulq_s32(d1, y_lo), d5, cb_lo);
-    int32x4_t b_hi = vmlaq_s32(vmulq_s32(d1, y_hi), d5, cb_hi);
+    // ---- B = dy + D5*Cb, +round, >>K ----
+    int32x4_t b_lo = vmlaq_s32(dy_lo, d5, cb_lo);
+    int32x4_t b_hi = vmlaq_s32(dy_hi, d5, cb_hi);
     b_lo = vshrq_n_s32(vaddq_s32(b_lo, round), K);
     b_hi = vshrq_n_s32(vaddq_s32(b_hi, round), K);
 
-    // ---- narrow s32 -> s16 (SATURATING) -> u8 (SATURATING) ----
-    // vqmovn_s32:  saturates s32 -> s16 into the signed range
-    // vqmovun_s16: saturates s16 -> u8, clamping negatives to 0
-    //              and values > 255 to 255.
-    // This is the vector equivalent of calling saturate_to_u8()
-    // on every lane, instead of the raw truncating cast.
     int16x8_t r16 = vcombine_s16(vqmovn_s32(r_lo), vqmovn_s32(r_hi));
     int16x8_t g16 = vcombine_s16(vqmovn_s32(g_lo), vqmovn_s32(g_hi));
     int16x8_t b16 = vcombine_s16(vqmovn_s32(b_lo), vqmovn_s32(b_hi));
@@ -111,6 +109,35 @@ static inline void CSC_YCC_to_RGB_neon_8( const uint8_t *Yp,
     vst1_u8(Bp, b8);
 }
 
+// Same math as chroma_upsample_neon_8, but takes the "row0" vectors
+// (c0, c1) already loaded rather than reloading them, and hands back
+// the "row1" vectors it just loaded so the *next* row-pair iteration
+// can reuse them as its own row0 instead of reloading that row.
+static inline void chroma_upsample_neon_8_cached(
+    uint8x8_t c0, uint8x8_t c1,
+    const uint8_t *src_row1,
+    uint8_t *dst_row0, uint8_t *dst_row1,
+    uint8x8_t *c0_next, uint8x8_t *c1_next)
+{
+    uint8x8_t n0 = vld1_u8(src_row1 + 0);
+    uint8x8_t n1 = vld1_u8(src_row1 + 1);
+
+    uint8x8_t top  = vrhadd_u8(c0, c1);
+    uint8x8_t left = vrhadd_u8(c0, n0);
+
+    uint16x8_t sum = vaddl_u8(c0, c1);
+    sum = vaddq_u16(sum, vaddl_u8(n0, n1));
+    sum = vaddq_u16(sum, vdupq_n_u16(2));
+    uint8x8_t middle = vmovn_u16(vshrq_n_u16(sum, 2));
+
+    uint8x8x2_t out_top = { { c0,   top    } };
+    uint8x8x2_t out_mid = { { left, middle } };
+    vst2_u8(dst_row0, out_top);
+    vst2_u8(dst_row1, out_mid);
+
+    *c0_next = n0;
+    *c1_next = n1;
+}
 void CSC_YCC_to_RGB_neon( int height, int width)
 {
     for (int row = 0; row < height; row++) {
@@ -478,6 +505,8 @@ static void chrominance_array_upsample( void) {
   Cr_temp[(row<<1)+1][(col<<1)+1] = Cr[row][col];
 
 } // END of chrominance_array_upsample()
+#define CHROMA_BLOCKS ( ((IMAGE_COL_SIZE >> 1) / 8) + 2 )  // small safety margin
+
 static void CSC_YCC_to_RGB_neon_fused( void)
 {
     const int ch_rows = IMAGE_ROW_SIZE >> 1;
@@ -488,78 +517,80 @@ static void CSC_YCC_to_RGB_neon_fused( void)
     uint8_t cr_strip0[IMAGE_COL_SIZE];
     uint8_t cr_strip1[IMAGE_COL_SIZE];
 
+    // Cache of this row's already-loaded chroma vectors, one pair per
+    // 8-wide block, carried forward so next iteration's "row0" load
+    // of the same bytes is skipped.
+    static uint8x8_t cb_cache_c0[CHROMA_BLOCKS], cb_cache_c1[CHROMA_BLOCKS];
+    static uint8x8_t cr_cache_c0[CHROMA_BLOCKS], cr_cache_c1[CHROMA_BLOCKS];
+    int cache_valid = 0;
+
     for (int crow = 0; crow < ch_rows; crow++) {
         int row  = crow << 1;
         int next = (crow + 1 < ch_rows) ? (crow + 1) : crow;
 
-        const uint8_t *cb_row0 = &Cb[crow][0];
         const uint8_t *cb_row1 = &Cb[next][0];
-        const uint8_t *cr_row0 = &Cr[crow][0];
         const uint8_t *cr_row1 = &Cr[next][0];
 
-        int col = 0;
-
-        //------------------------------------------------------------
-        // Vectorized interior: 8 chroma columns (-> 16 luma columns)
-        // per call. chroma_upsample_neon_8 writes the same interleaved
-        // C00/top/left/middle layout the scalar loop below used to
-        // build by hand, so the consumer (CSC_YCC_to_RGB_neon_8 below)
-        // needs no changes at all.
-        //------------------------------------------------------------
-        for (; col + 8 <= ch_cols - 1; col += 8) {
+        int col, blk;
+        for (col = 0, blk = 0; col + 8 <= ch_cols - 1; col += 8, blk++) {
             int oc = col << 1;
-            chroma_upsample_neon_8( cb_row0 + col, cb_row1 + col,
-                                    cb_strip0 + oc, cb_strip1 + oc);
-            chroma_upsample_neon_8( cr_row0 + col, cr_row1 + col,
-                                    cr_strip0 + oc, cr_strip1 + oc);
+            uint8x8_t cb_c0, cb_c1, cr_c0, cr_c1;
+
+            if (cache_valid) {
+                cb_c0 = cb_cache_c0[blk];
+                cb_c1 = cb_cache_c1[blk];
+                cr_c0 = cr_cache_c0[blk];
+                cr_c1 = cr_cache_c1[blk];
+            } else {
+                cb_c0 = vld1_u8(&Cb[crow][col]);
+                cb_c1 = vld1_u8(&Cb[crow][col + 1]);
+                cr_c0 = vld1_u8(&Cr[crow][col]);
+                cr_c1 = vld1_u8(&Cr[crow][col + 1]);
+            }
+
+            chroma_upsample_neon_8_cached( cb_c0, cb_c1, cb_row1 + col,
+                                            cb_strip0 + oc, cb_strip1 + oc,
+                                            &cb_cache_c0[blk], &cb_cache_c1[blk]);
+            chroma_upsample_neon_8_cached( cr_c0, cr_c1, cr_row1 + col,
+                                            cr_strip0 + oc, cr_strip1 + oc,
+                                            &cr_cache_c0[blk], &cr_cache_c1[blk]);
         }
+        cache_valid = 1;
 
         // ---- scalar remainder: interior columns left over (< 8 of them) ----
         for (; col < ch_cols - 1; col++) {
-            int cb00 = cb_row0[col], cb01 = cb_row0[col + 1];
-            int cb10 = cb_row1[col], cb11 = cb_row1[col + 1];
-            int cr00 = cr_row0[col], cr01 = cr_row0[col + 1];
-            int cr10 = cr_row1[col], cr11 = cr_row1[col + 1];
+            int cb00 = Cb[crow][col], cb01 = Cb[crow][col + 1];
+            int cb10 = Cb[next][col], cb11 = Cb[next][col + 1];
+            int cr00 = Cr[crow][col], cr01 = Cr[crow][col + 1];
+            int cr10 = Cr[next][col], cr11 = Cr[next][col + 1];
 
             int cb_top    = (cb00 + cb01 + 1) >> 1;
             int cb_left   = (cb00 + cb10 + 1) >> 1;
             int cb_middle = (cb00 + cb01 + cb10 + cb11 + 2) >> 2;
-
             int cr_top    = (cr00 + cr01 + 1) >> 1;
             int cr_left   = (cr00 + cr10 + 1) >> 1;
             int cr_middle = (cr00 + cr01 + cr10 + cr11 + 2) >> 2;
 
             int oc = col << 1;
-            cb_strip0[oc + 0] = (uint8_t)cb00;
-            cb_strip0[oc + 1] = (uint8_t)cb_top;
-            cb_strip1[oc + 0] = (uint8_t)cb_left;
-            cb_strip1[oc + 1] = (uint8_t)cb_middle;
-
-            cr_strip0[oc + 0] = (uint8_t)cr00;
-            cr_strip0[oc + 1] = (uint8_t)cr_top;
-            cr_strip1[oc + 0] = (uint8_t)cr_left;
-            cr_strip1[oc + 1] = (uint8_t)cr_middle;
+            cb_strip0[oc + 0] = (uint8_t)cb00;   cb_strip0[oc + 1] = (uint8_t)cb_top;
+            cb_strip1[oc + 0] = (uint8_t)cb_left; cb_strip1[oc + 1] = (uint8_t)cb_middle;
+            cr_strip0[oc + 0] = (uint8_t)cr00;   cr_strip0[oc + 1] = (uint8_t)cr_top;
+            cr_strip1[oc + 0] = (uint8_t)cr_left; cr_strip1[oc + 1] = (uint8_t)cr_middle;
         }
 
-        // ---- last chroma column: replicate horizontally, unchanged ----
+        // ---- last chroma column: replicate horizontally ----
         {
             int lc = ch_cols - 1;
             int oc = lc << 1;
-
-            int cb00 = cb_row0[lc], cb10 = cb_row1[lc];
-            int cr00 = cr_row0[lc], cr10 = cr_row1[lc];
+            int cb00 = Cb[crow][lc], cb10 = Cb[next][lc];
+            int cr00 = Cr[crow][lc], cr10 = Cr[next][lc];
             int cb_left = (cb00 + cb10 + 1) >> 1;
             int cr_left = (cr00 + cr10 + 1) >> 1;
 
-            cb_strip0[oc + 0] = (uint8_t)cb00;
-            cb_strip0[oc + 1] = (uint8_t)cb00;
-            cb_strip1[oc + 0] = (uint8_t)cb_left;
-            cb_strip1[oc + 1] = (uint8_t)cb_left;
-
-            cr_strip0[oc + 0] = (uint8_t)cr00;
-            cr_strip0[oc + 1] = (uint8_t)cr00;
-            cr_strip1[oc + 0] = (uint8_t)cr_left;
-            cr_strip1[oc + 1] = (uint8_t)cr_left;
+            cb_strip0[oc + 0] = (uint8_t)cb00;    cb_strip0[oc + 1] = (uint8_t)cb00;
+            cb_strip1[oc + 0] = (uint8_t)cb_left; cb_strip1[oc + 1] = (uint8_t)cb_left;
+            cr_strip0[oc + 0] = (uint8_t)cr00;    cr_strip0[oc + 1] = (uint8_t)cr00;
+            cr_strip1[oc + 0] = (uint8_t)cr_left; cr_strip1[oc + 1] = (uint8_t)cr_left;
         }
 
         // ---- consume the strip immediately while hot in L1 (unchanged) ----
@@ -573,7 +604,6 @@ static void CSC_YCC_to_RGB_neon_fused( void)
             CSC_YCC_to_RGB_neon_8( Yp0 + c, cb_strip0 + c, cr_strip0 + c, Rp0 + c, Gp0 + c, Bp0 + c);
             CSC_YCC_to_RGB_neon_8( Yp1 + c, cb_strip1 + c, cr_strip1 + c, Rp1 + c, Gp1 + c, Bp1 + c);
         }
-
         for (; c < IMAGE_COL_SIZE; c++) {
             int y0 = (int)Yp0[c] - 16,  y1 = (int)Yp1[c] - 16;
             int cb0 = (int)cb_strip0[c] - 128, cb1 = (int)cb_strip1[c] - 128;
@@ -582,20 +612,15 @@ static void CSC_YCC_to_RGB_neon_fused( void)
             int r0 = D1 * y0 + D2 * cr0;                r0 += (1 << (K - 1)); r0 >>= K;
             int g0 = D1 * y0 - D3 * cr0 - D4 * cb0;      g0 += (1 << (K - 1)); g0 >>= K;
             int b0 = D1 * y0 + D5 * cb0;                 b0 += (1 << (K - 1)); b0 >>= K;
-            Rp0[c] = saturate_to_u8(r0);
-            Gp0[c] = saturate_to_u8(g0);
-            Bp0[c] = saturate_to_u8(b0);
+            Rp0[c] = saturate_to_u8(r0); Gp0[c] = saturate_to_u8(g0); Bp0[c] = saturate_to_u8(b0);
 
             int r1 = D1 * y1 + D2 * cr1;                r1 += (1 << (K - 1)); r1 >>= K;
             int g1 = D1 * y1 - D3 * cr1 - D4 * cb1;      g1 += (1 << (K - 1)); g1 >>= K;
             int b1 = D1 * y1 + D5 * cb1;                 b1 += (1 << (K - 1)); b1 >>= K;
-            Rp1[c] = saturate_to_u8(r1);
-            Gp1[c] = saturate_to_u8(g1);
-            Bp1[c] = saturate_to_u8(b1);
+            Rp1[c] = saturate_to_u8(r1); Gp1[c] = saturate_to_u8(g1); Bp1[c] = saturate_to_u8(b1);
         }
     }
 }
-
 // Processes 8 consecutive interior chroma columns for one row-pair
 // (row, row+1) of ONE plane (call once for Cb, once for Cr).
 // Writes 16 output bytes into each of two consecutive output rows.
