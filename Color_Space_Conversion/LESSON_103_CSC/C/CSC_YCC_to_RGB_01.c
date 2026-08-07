@@ -39,8 +39,12 @@ static void chroma_upsample_neon_8( const uint8_t *Cp0, const uint8_t *Cp1,
 // Fused core: takes already-loaded 8-lane Y/Cb/Cr vectors, returns R/G/B
 // vectors. No loads, no stores -- pure register-to-register, meant to be
 // inlined directly into the fused pipeline below.
-static inline void color_matrix_neon_8( uint8x8_t y8, uint8x8_t cb8, uint8x8_t cr8,
-                                         uint8x8_t *r8, uint8x8_t *g8, uint8x8_t *b8)
+static inline void color_matrix_neon_8( const uint8x8_t y8,
+                                         const uint8x8_t cb8,
+                                         const uint8x8_t cr8,
+                                         uint8x8_t *r8,
+                                         uint8x8_t *g8,
+                                         uint8x8_t *b8)
 {
     int16x8_t y16  = vreinterpretq_s16_u16(vmovl_u8(y8));
     int16x8_t cb16 = vreinterpretq_s16_u16(vmovl_u8(cb8));
@@ -50,16 +54,16 @@ static inline void color_matrix_neon_8( uint8x8_t y8, uint8x8_t cb8, uint8x8_t c
     cb16 = vsubq_s16(cb16, vdupq_n_s16(128));
     cr16 = vsubq_s16(cr16, vdupq_n_s16(128));
 
-    int32x4_t y_lo  = vmovl_s16(vget_low_s16(y16));
-    int32x4_t y_hi  = vmovl_s16(vget_high_s16(y16));
-    int32x4_t cb_lo = vmovl_s16(vget_low_s16(cb16));
-    int32x4_t cb_hi = vmovl_s16(vget_high_s16(cb16));
-    int32x4_t cr_lo = vmovl_s16(vget_low_s16(cr16));
-    int32x4_t cr_hi = vmovl_s16(vget_high_s16(cr16));
+    const int32x4_t y_lo  = vmovl_s16(vget_low_s16(y16));
+    const int32x4_t y_hi  = vmovl_s16(vget_high_s16(y16));
+    const int32x4_t cb_lo = vmovl_s16(vget_low_s16(cb16));
+    const int32x4_t cb_hi = vmovl_s16(vget_high_s16(cb16));
+    const int32x4_t cr_lo = vmovl_s16(vget_low_s16(cr16));
+    const int32x4_t cr_hi = vmovl_s16(vget_high_s16(cr16));
 
     // D1*Y computed once, reused for R, G, and B -- was 3x redundant before.
-    int32x4_t dy_lo = vmulq_n_s32(y_lo, D1);
-    int32x4_t dy_hi = vmulq_n_s32(y_hi, D1);
+    const int32x4_t dy_lo = vmulq_n_s32(y_lo, D1);
+    const int32x4_t dy_hi = vmulq_n_s32(y_hi, D1);
 
     // R = dy + D2*Cr  -- vmlaq_n_s32 folds the *D2 directly, no dup'd
     // constant register needed. vrshrq_n_s32 is a single rounding
@@ -94,11 +98,11 @@ static inline void CSC_YCC_to_RGB_neon_8( const uint8_t *Yp,
                                            uint8_t *Gp,
                                            uint8_t *Bp)
 {
-    uint8_t r8[8], g8[8], b8[8];
     uint8x8_t r, g, b;
     color_matrix_neon_8( vld1_u8(Yp), vld1_u8(Cbp), vld1_u8(Crp), &r, &g, &b);
-    vst1_u8(Rp, r); vst1_u8(Gp, g); vst1_u8(Bp, b);
-    (void)r8; (void)g8; (void)b8;  // (r8/g8/b8 unused -- vst1 writes directly)
+    vst1_u8(Rp, r);
+    vst1_u8(Gp, g);
+    vst1_u8(Bp, b);
 }
 
 // Same math as chroma_upsample_neon_8, but takes the "row0" vectors
