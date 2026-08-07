@@ -498,7 +498,6 @@ static void chrominance_array_upsample( void) {
 
 } // END of chrominance_array_upsample()
 
-#define CHROMA_BLOCKS ( ((IMAGE_COL_SIZE >> 1) / 8) + 2 )  // small safety margin
 // Scalar fallback for the tail: whatever interior chroma columns don't
 // fill a full 8-wide block, plus the replicated last column. Computes
 // one pixel's R/G/B directly -- no strip buffer involved.
@@ -516,64 +515,122 @@ static inline void set_rgb_pixel( int row, int col, int Yv, int Cbv, int Crv)
 }
 static void CSC_YCC_to_RGB_neon_fused( void)
 {
-    const int ch_rows = IMAGE_ROW_SIZE >> 1;
-    const int ch_cols = IMAGE_COL_SIZE >> 1;
+  for (row = 0; row < HEIGHT; row += 2)
+{
+    uint8_t *y0 = &Y[row][0];
+    uint8_t *y1 = &Y[row+1][0];
 
-    for (int crow = 0; crow < ch_rows; crow++) {
-        int row = crow << 1;
-        int col = 0;
+    uint8_t *cb = &Cb[row/2][0];
+    uint8_t *cr = &Cr[row/2][0];
 
-        // Vectorized interior: 8 chroma samples -> 16 luma columns per
-        // block. Only 3 live vectors at a time per call (Y, Cb, Cr in;
-        // R,G,B out via color_matrix_neon_8) -- nothing close to
-        // pressuring a 16 Q-register file, unlike the 2x2-neighborhood
-        // version. Chroma is replicated (matches drop-mode encode
-        // exactly), not box-averaged, so no neighbor loads at all.
-        for (; col + 8 <= ch_cols; col += 8) {
-            int lcol = col << 1;
+    uint8_t *r0 = &R[row][0];
+    uint8_t *r1 = &R[row+1][0];
 
-            uint8x8_t cb8 = vld1_u8(&Cb[crow][col]);
-            uint8x8_t cr8 = vld1_u8(&Cr[crow][col]);
+    uint8_t *g0 = &G[row][0];
+    uint8_t *g1 = &G[row+1][0];
 
-            // Duplicate each chroma lane -> 16 replicated bytes,
-            // matching one 8-wide luma block exactly (each chroma
-            // sample covers 2 adjacent luma columns).
-            uint8x8x2_t cbz = vzip_u8(cb8, cb8);
-            uint8x8x2_t crz = vzip_u8(cr8, cr8);
-            uint8x16_t cb16 = vcombine_u8(cbz.val[0], cbz.val[1]);
-            uint8x16_t cr16 = vcombine_u8(crz.val[0], crz.val[1]);
-            uint8x8_t cb_lo = vget_low_u8(cb16), cb_hi = vget_high_u8(cb16);
-            uint8x8_t cr_lo = vget_low_u8(cr16), cr_hi = vget_high_u8(cr16);
+    uint8_t *b0 = &B[row][0];
+    uint8_t *b1 = &B[row+1][0];
 
-            uint8x8_t y0_lo = vld1_u8(&Y[row][lcol]);
-            uint8x8_t y0_hi = vld1_u8(&Y[row][lcol + 8]);
-            uint8x8_t y1_lo = vld1_u8(&Y[row + 1][lcol]);
-            uint8x8_t y1_hi = vld1_u8(&Y[row + 1][lcol + 8]);
+    for (col = 0; col < WIDTH; col += 8)
+    {
+        //---------------------------------------------------------
+        // Load 8 Y pixels from each row
+        //---------------------------------------------------------
 
-            uint8x8_t r,g,b;
-            color_matrix_neon_8(y0_lo, cb_lo, cr_lo, &r,&g,&b);
-            vst1_u8(&R[row][lcol], r); vst1_u8(&G[row][lcol], g); vst1_u8(&B[row][lcol], b);
+        uint8x8_t y_top = vld1_u8(y0 + col);
+        uint8x8_t y_bot = vld1_u8(y1 + col);
 
-            color_matrix_neon_8(y0_hi, cb_hi, cr_hi, &r,&g,&b);
-            vst1_u8(&R[row][lcol+8], r); vst1_u8(&G[row][lcol+8], g); vst1_u8(&B[row][lcol+8], b);
+        //---------------------------------------------------------
+        // Load 4 chroma samples
+        //---------------------------------------------------------
 
-            color_matrix_neon_8(y1_lo, cb_lo, cr_lo, &r,&g,&b);
-            vst1_u8(&R[row+1][lcol], r); vst1_u8(&G[row+1][lcol], g); vst1_u8(&B[row+1][lcol], b);
+        uint8x8_t cb4 = vld1_u8(cb + col/2);
+        uint8x8_t cr4 = vld1_u8(cr + col/2);
 
-            color_matrix_neon_8(y1_hi, cb_hi, cr_hi, &r,&g,&b);
-            vst1_u8(&R[row+1][lcol+8], r); vst1_u8(&G[row+1][lcol+8], g); vst1_u8(&B[row+1][lcol+8], b);
-        }
+        //---------------------------------------------------------
+        // Duplicate each chroma sample
+        //
+        // c0 c1 c2 c3
+        //
+        // becomes
+        //
+        // c0 c0 c1 c1 c2 c2 c3 c3
+        //---------------------------------------------------------
 
-        // scalar tail: <8 chroma columns left, replicate mode (no neighbor)
-        for (; col < ch_cols; col++) {
-            int lcol = col << 1;
-            int cbv = Cb[crow][col], crv = Cr[crow][col];
-            set_rgb_pixel(row,   lcol,   Y[row][lcol],     cbv, crv);
-            set_rgb_pixel(row,   lcol+1, Y[row][lcol+1],   cbv, crv);
-            set_rgb_pixel(row+1, lcol,   Y[row+1][lcol],   cbv, crv);
-            set_rgb_pixel(row+1, lcol+1, Y[row+1][lcol+1], cbv, crv);
-        }
+        uint8x8x2_t cbzip = vzip_u8(cb4, cb4);
+        uint8x8x2_t crzip = vzip_u8(cr4, cr4);
+
+        uint8x8_t cbdup = cbzip.val[0];
+        uint8x8_t crdup = crzip.val[0];
+
+        //---------------------------------------------------------
+        // Widen
+        //---------------------------------------------------------
+
+        int16x8_t Y0 = vreinterpretq_s16_u16(vmovl_u8(y_top));
+        int16x8_t Y1 = vreinterpretq_s16_u16(vmovl_u8(y_bot));
+
+        int16x8_t CB = vreinterpretq_s16_u16(vmovl_u8(cbdup));
+        int16x8_t CR = vreinterpretq_s16_u16(vmovl_u8(crdup));
+
+        //---------------------------------------------------------
+        // Level shift
+        //---------------------------------------------------------
+
+        Y0 = vsubq_s16(Y0,vdupq_n_s16(16));
+        Y1 = vsubq_s16(Y1,vdupq_n_s16(16));
+
+        CB = vsubq_s16(CB,vdupq_n_s16(128));
+        CR = vsubq_s16(CR,vdupq_n_s16(128));
+
+        //---------------------------------------------------------
+        // Compute RGB for top row
+        //---------------------------------------------------------
+
+        int16x8_t Rt = vmulq_n_s16(Y0,D1);
+        Rt = vmlaq_n_s16(Rt,CR,D2);
+        Rt = vrshrq_n_s16(Rt,K);
+
+        int16x8_t Gt = vmulq_n_s16(Y0,D1);
+        Gt = vmlsq_n_s16(Gt,CR,D3);
+        Gt = vmlsq_n_s16(Gt,CB,D4);
+        Gt = vrshrq_n_s16(Gt,K);
+
+        int16x8_t Bt = vmulq_n_s16(Y0,D1);
+        Bt = vmlaq_n_s16(Bt,CB,D5);
+        Bt = vrshrq_n_s16(Bt,K);
+
+        //---------------------------------------------------------
+        // Bottom row
+        //---------------------------------------------------------
+
+        int16x8_t Rb = vmulq_n_s16(Y1,D1);
+        Rb = vmlaq_n_s16(Rb,CR,D2);
+        Rb = vrshrq_n_s16(Rb,K);
+
+        int16x8_t Gb = vmulq_n_s16(Y1,D1);
+        Gb = vmlsq_n_s16(Gb,CR,D3);
+        Gb = vmlsq_n_s16(Gb,CB,D4);
+        Gb = vrshrq_n_s16(Gb,K);
+
+        int16x8_t Bb = vmulq_n_s16(Y1,D1);
+        Bb = vmlaq_n_s16(Bb,CB,D5);
+        Bb = vrshrq_n_s16(Bb,K);
+
+        //---------------------------------------------------------
+        // Store
+        //---------------------------------------------------------
+
+        vst1_u8(r0+col,vqmovun_s16(Rt));
+        vst1_u8(g0+col,vqmovun_s16(Gt));
+        vst1_u8(b0+col,vqmovun_s16(Bt));
+
+        vst1_u8(r1+col,vqmovun_s16(Rb));
+        vst1_u8(g1+col,vqmovun_s16(Gb));
+        vst1_u8(b1+col,vqmovun_s16(Bb));
     }
+}
 }
 // Processes 8 consecutive interior chroma columns for one row-pair
 // (row, row+1) of ONE plane (call once for Cb, once for Cr).
