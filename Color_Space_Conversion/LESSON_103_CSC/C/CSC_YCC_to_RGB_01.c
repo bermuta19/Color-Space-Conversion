@@ -263,7 +263,6 @@ static void CSC_YCC_to_RGB_brute_force_float( int row, int col) {
 
 
 
-// =======
 static void CSC_YCC_to_RGB_brute_force_int( int row, int col) {
 //
   int R_pixel_00, R_pixel_01, R_pixel_10, R_pixel_11;
@@ -274,8 +273,8 @@ static void CSC_YCC_to_RGB_brute_force_int( int row, int col) {
   int Cb_pixel_00, Cb_pixel_01, Cb_pixel_10, Cb_pixel_11;
   int Cr_pixel_00, Cr_pixel_01, Cr_pixel_10, Cr_pixel_11;
 
-  // NOTE: chrominance_array_upsample() is now called once per frame by the
-  // CSC_YCC_to_RGB() driver, not per-block here.
+  // Upsample Cb and Cr into Cb_temp and Cr_temp
+  //chrominance_array_upsample();
 
   Y_pixel_00 = (int)Y[row+0][col+0];
   Y_pixel_01 = (int)Y[row+0][col+1];
