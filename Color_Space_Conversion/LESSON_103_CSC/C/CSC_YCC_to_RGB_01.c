@@ -466,9 +466,9 @@ static void chrominance_array_upsample( void) {
 
 } // END of chrominance_array_upsample()
 
-static void CSC_YCC_to_RGB_neon_fused( void)
+static void CSC_YCC_to_RGB_neon_fused( int height, int width)
 {
-  for (row = 0; row < HEIGHT; row += 2)
+  for (int row = 0; row < height; row += 2)
 {
     uint8_t *y0 = &Y[row][0];
     uint8_t *y1 = &Y[row+1][0];
@@ -485,7 +485,7 @@ static void CSC_YCC_to_RGB_neon_fused( void)
     uint8_t *b0 = &B[row][0];
     uint8_t *b1 = &B[row+1][0];
 
-    for (col = 0; col < WIDTH; col += 8)
+    for (int col = 0; col < width; col += 8)
     {
         //---------------------------------------------------------
         // Load 8 Y pixels from each row
@@ -597,7 +597,7 @@ void CSC_YCC_to_RGB( void) {
 
   
   if( YCC_to_RGB_ROUTINE == 4) {
-    CSC_YCC_to_RGB_neon_fused();
+    CSC_YCC_to_RGB_neon_fused(IMAGE_ROW_SIZE,IMAGE_COL_SIZE);
     //CSC_YCC_to_RGB_neon(IMAGE_ROW_SIZE, IMAGE_COL_SIZE);
     return;
   }
