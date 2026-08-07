@@ -280,6 +280,8 @@ static void chrominance_array_upsample( void) {
 
 // =======
 void CSC_YCC_to_RGB( void) {
+  
+    int row, col;
   if( YCC_to_RGB_ROUTINE == 4) {
     for( row = 0; row < IMAGE_ROW_SIZE; row += 2) {
         for( col = 0; col < IMAGE_COL_SIZE; col += 8) {
@@ -287,7 +289,6 @@ void CSC_YCC_to_RGB( void) {
         }
       }
   } else {
-    int row, col;
     chrominance_array_upsample();
     for( row=0; row<IMAGE_ROW_SIZE; row+=2) {
       for( col=0; col<IMAGE_COL_SIZE; col+=2) {
