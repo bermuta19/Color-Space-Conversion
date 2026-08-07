@@ -245,7 +245,7 @@ static void CSC_YCC_to_RGB_brute_force_int( int row, int col) {
   int Cr_pixel_00, Cr_pixel_01, Cr_pixel_10, Cr_pixel_11;
 
   // Upsample Cb and Cr into Cb_temp and Cr_temp
-  chrominance_array_upsample();
+  //chrominance_array_upsample();
 
   Y_pixel_00 = (int)Y[row+0][col+0];
   Y_pixel_01 = (int)Y[row+0][col+1];
@@ -602,7 +602,7 @@ void CSC_YCC_to_RGB( void) {
     return;
   }
   int row, col; // indices for row and column
-  //chrominance_array_upsample();
+  chrominance_array_upsample();
   for( row=0; row<IMAGE_ROW_SIZE; row+=2) {
     for( col=0; col<IMAGE_COL_SIZE; col+=2) { 
       switch (YCC_to_RGB_ROUTINE) {
