@@ -330,10 +330,9 @@ void CSC_RGB_to_YCC( void) {
           }
           break;
         case 3:
-      for( col=0; col<IMAGE_COL_SIZE; col+=8) {
-        CSC_RGB_to_YCC_vectors( row, col, y_base, c_base, CHROMINANCE_DOWNSAMPLING_MODE);
-      }
-      break;
+          for( col=0; col<IMAGE_COL_SIZE; col+=8) {
+            CSC_RGB_to_YCC_vectors( row, col, y_base, c_base, CHROMINANCE_DOWNSAMPLING_MODE);
+          }
           break;
         default:
           break;
