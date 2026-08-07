@@ -97,7 +97,6 @@ static void CSC_YCC_to_RGB_vectors( int row, int col)
                                vqmovn_s32(vrshrq_n_s32(vmlaq_n_s32(dy1_hi, cb_hi, D5), K)));
   vst1_u8(&B[row + 1][col], vqmovun_s16(b1));
 
-  (void)y_bias; (void)c_bias;  // kept for signature symmetry with the forward function; unused since bias is applied via vdupq_n_s16 above
 }
 
 
