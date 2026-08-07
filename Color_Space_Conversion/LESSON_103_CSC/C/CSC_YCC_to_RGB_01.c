@@ -514,94 +514,64 @@ static inline void set_rgb_pixel( int row, int col, int Yv, int Cbv, int Crv)
     G[row][col] = saturate_to_u8(g);
     B[row][col] = saturate_to_u8(b);
 }
-
 static void CSC_YCC_to_RGB_neon_fused( void)
 {
     const int ch_rows = IMAGE_ROW_SIZE >> 1;
     const int ch_cols = IMAGE_COL_SIZE >> 1;
 
     for (int crow = 0; crow < ch_rows; crow++) {
-        int row  = crow << 1;
-        int next = (crow + 1 < ch_rows) ? (crow + 1) : crow;
-
+        int row = crow << 1;
         int col = 0;
 
-        // ---- vectorized interior: 8 chroma cols -> 16 luma cols per block ----
-        for (; col + 8 <= ch_cols - 1; col += 8) {
+        // Vectorized interior: 8 chroma samples -> 16 luma columns per
+        // block. Only 3 live vectors at a time per call (Y, Cb, Cr in;
+        // R,G,B out via color_matrix_neon_8) -- nothing close to
+        // pressuring a 16 Q-register file, unlike the 2x2-neighborhood
+        // version. Chroma is replicated (matches drop-mode encode
+        // exactly), not box-averaged, so no neighbor loads at all.
+        for (; col + 8 <= ch_cols; col += 8) {
             int lcol = col << 1;
 
-            uint8x8_t cb00 = vld1_u8(&Cb[crow][col]);
-            uint8x8_t cb01 = vld1_u8(&Cb[crow][col + 1]);
-            uint8x8_t cb10 = vld1_u8(&Cb[next][col]);
-            uint8x8_t cb11 = vld1_u8(&Cb[next][col + 1]);
+            uint8x8_t cb8 = vld1_u8(&Cb[crow][col]);
+            uint8x8_t cr8 = vld1_u8(&Cr[crow][col]);
 
-            uint8x8_t cr00 = vld1_u8(&Cr[crow][col]);
-            uint8x8_t cr01 = vld1_u8(&Cr[crow][col + 1]);
-            uint8x8_t cr10 = vld1_u8(&Cr[next][col]);
-            uint8x8_t cr11 = vld1_u8(&Cr[next][col + 1]);
+            // Duplicate each chroma lane -> 16 replicated bytes,
+            // matching one 8-wide luma block exactly (each chroma
+            // sample covers 2 adjacent luma columns).
+            uint8x8x2_t cbz = vzip_u8(cb8, cb8);
+            uint8x8x2_t crz = vzip_u8(cr8, cr8);
+            uint8x16_t cb16 = vcombine_u8(cbz.val[0], cbz.val[1]);
+            uint8x16_t cr16 = vcombine_u8(crz.val[0], crz.val[1]);
+            uint8x8_t cb_lo = vget_low_u8(cb16), cb_hi = vget_high_u8(cb16);
+            uint8x8_t cr_lo = vget_low_u8(cr16), cr_hi = vget_high_u8(cr16);
 
-            // 4 chroma variants per plane, kept in registers -- never stored.
-            uint8x8_t cb_top    = vrhadd_u8(cb00, cb01);
-            uint8x8_t cb_left   = vrhadd_u8(cb00, cb10);
-            uint16x8_t cb_sum   = vaddq_u16(vaddl_u8(cb00, cb01), vaddl_u8(cb10, cb11));
-            uint8x8_t cb_middle = vmovn_u16(vshrq_n_u16(vaddq_u16(cb_sum, vdupq_n_u16(2)), 2));
+            uint8x8_t y0_lo = vld1_u8(&Y[row][lcol]);
+            uint8x8_t y0_hi = vld1_u8(&Y[row][lcol + 8]);
+            uint8x8_t y1_lo = vld1_u8(&Y[row + 1][lcol]);
+            uint8x8_t y1_hi = vld1_u8(&Y[row + 1][lcol + 8]);
 
-            uint8x8_t cr_top    = vrhadd_u8(cr00, cr01);
-            uint8x8_t cr_left   = vrhadd_u8(cr00, cr10);
-            uint16x8_t cr_sum   = vaddq_u16(vaddl_u8(cr00, cr01), vaddl_u8(cr10, cr11));
-            uint8x8_t cr_middle = vmovn_u16(vshrq_n_u16(vaddq_u16(cr_sum, vdupq_n_u16(2)), 2));
+            uint8x8_t r,g,b;
+            color_matrix_neon_8(y0_lo, cb_lo, cr_lo, &r,&g,&b);
+            vst1_u8(&R[row][lcol], r); vst1_u8(&G[row][lcol], g); vst1_u8(&B[row][lcol], b);
 
-            // Y loaded already de-interleaved into even/odd luma columns --
-            // aligns 1:1 with the chroma variants above with no extra work.
-            uint8x8x2_t y_row0 = vld2_u8(&Y[row][lcol]);
-            uint8x8x2_t y_row1 = vld2_u8(&Y[row + 1][lcol]);
+            color_matrix_neon_8(y0_hi, cb_hi, cr_hi, &r,&g,&b);
+            vst1_u8(&R[row][lcol+8], r); vst1_u8(&G[row][lcol+8], g); vst1_u8(&B[row][lcol+8], b);
 
-            // ---- row0: even cols use cb00/cr00, odd cols use cb_top/cr_top ----
-            uint8x8_t r0e, g0e, b0e, r0o, g0o, b0o;
-            color_matrix_neon_8( y_row0.val[0], cb00,   cr00,   &r0e, &g0e, &b0e);
-            color_matrix_neon_8( y_row0.val[1], cb_top, cr_top, &r0o, &g0o, &b0o);
+            color_matrix_neon_8(y1_lo, cb_lo, cr_lo, &r,&g,&b);
+            vst1_u8(&R[row+1][lcol], r); vst1_u8(&G[row+1][lcol], g); vst1_u8(&B[row+1][lcol], b);
 
-            uint8x8x2_t r0 = {{ r0e, r0o }}; vst2_u8(&R[row][lcol], r0);
-            uint8x8x2_t g0 = {{ g0e, g0o }}; vst2_u8(&G[row][lcol], g0);
-            uint8x8x2_t b0 = {{ b0e, b0o }}; vst2_u8(&B[row][lcol], b0);
-
-            // ---- row1: even cols use cb_left/cr_left, odd cols use cb_middle/cr_middle ----
-            uint8x8_t r1e, g1e, b1e, r1o, g1o, b1o;
-            color_matrix_neon_8( y_row1.val[0], cb_left,   cr_left,   &r1e, &g1e, &b1e);
-            color_matrix_neon_8( y_row1.val[1], cb_middle, cr_middle, &r1o, &g1o, &b1o);
-
-            uint8x8x2_t r1 = {{ r1e, r1o }}; vst2_u8(&R[row + 1][lcol], r1);
-            uint8x8x2_t g1 = {{ g1e, g1o }}; vst2_u8(&G[row + 1][lcol], g1);
-            uint8x8x2_t b1 = {{ b1e, b1o }}; vst2_u8(&B[row + 1][lcol], b1);
+            color_matrix_neon_8(y1_hi, cb_hi, cr_hi, &r,&g,&b);
+            vst1_u8(&R[row+1][lcol+8], r); vst1_u8(&G[row+1][lcol+8], g); vst1_u8(&B[row+1][lcol+8], b);
         }
 
-        // ---- scalar tail: leftover interior columns + replicated last column ----
+        // scalar tail: <8 chroma columns left, replicate mode (no neighbor)
         for (; col < ch_cols; col++) {
             int lcol = col << 1;
-            int has_right = (col + 1 < ch_cols);
-
-            int cb00 = Cb[crow][col];
-            int cb01 = has_right ? Cb[crow][col + 1] : cb00;
-            int cb10 = Cb[next][col];
-            int cb11 = has_right ? Cb[next][col + 1] : cb10;
-
-            int cr00 = Cr[crow][col];
-            int cr01 = has_right ? Cr[crow][col + 1] : cr00;
-            int cr10 = Cr[next][col];
-            int cr11 = has_right ? Cr[next][col + 1] : cr10;
-
-            int cb_top    = (cb00 + cb01 + 1) >> 1;
-            int cb_left   = (cb00 + cb10 + 1) >> 1;
-            int cb_middle = (cb00 + cb01 + cb10 + cb11 + 2) >> 2;
-
-            int cr_top    = (cr00 + cr01 + 1) >> 1;
-            int cr_left   = (cr00 + cr10 + 1) >> 1;
-            int cr_middle = (cr00 + cr01 + cr10 + cr11 + 2) >> 2;
-
-            set_rgb_pixel( row,     lcol,     Y[row][lcol],       cb00,      cr00);
-            set_rgb_pixel( row,     lcol + 1, Y[row][lcol + 1],   cb_top,    cr_top);
-            set_rgb_pixel( row + 1, lcol,     Y[row + 1][lcol],   cb_left,   cr_left);
-            set_rgb_pixel( row + 1, lcol + 1, Y[row + 1][lcol + 1], cb_middle, cr_middle);
+            int cbv = Cb[crow][col], crv = Cr[crow][col];
+            set_rgb_pixel(row,   lcol,   Y[row][lcol],     cbv, crv);
+            set_rgb_pixel(row,   lcol+1, Y[row][lcol+1],   cbv, crv);
+            set_rgb_pixel(row+1, lcol,   Y[row+1][lcol],   cbv, crv);
+            set_rgb_pixel(row+1, lcol+1, Y[row+1][lcol+1], cbv, crv);
         }
     }
 }
