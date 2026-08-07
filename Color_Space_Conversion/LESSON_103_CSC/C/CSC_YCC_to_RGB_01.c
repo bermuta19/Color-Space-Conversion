@@ -61,21 +61,15 @@ static inline void color_matrix_neon_8( const uint8x8_t y8,
     const int32x4_t cr_lo = vmovl_s16(vget_low_s16(cr16));
     const int32x4_t cr_hi = vmovl_s16(vget_high_s16(cr16));
 
-    // D1*Y computed once, reused for R, G, and B -- was 3x redundant before.
     const int32x4_t dy_lo = vmulq_n_s32(y_lo, D1);
     const int32x4_t dy_hi = vmulq_n_s32(y_hi, D1);
 
-    // R = dy + D2*Cr  -- vmlaq_n_s32 folds the *D2 directly, no dup'd
-    // constant register needed. vrshrq_n_s32 is a single rounding
-    // shift-right instruction, replacing "+round; >>K".
     int32x4_t r_lo = vrshrq_n_s32(vmlaq_n_s32(dy_lo, cr_lo, D2), K);
     int32x4_t r_hi = vrshrq_n_s32(vmlaq_n_s32(dy_hi, cr_hi, D2), K);
 
-    // G = dy - D3*Cr - D4*Cb
     int32x4_t g_lo = vrshrq_n_s32(vmlsq_n_s32(vmlsq_n_s32(dy_lo, cr_lo, D3), cb_lo, D4), K);
     int32x4_t g_hi = vrshrq_n_s32(vmlsq_n_s32(vmlsq_n_s32(dy_hi, cr_hi, D3), cb_hi, D4), K);
 
-    // B = dy + D5*Cb
     int32x4_t b_lo = vrshrq_n_s32(vmlaq_n_s32(dy_lo, cb_lo, D5), K);
     int32x4_t b_hi = vrshrq_n_s32(vmlaq_n_s32(dy_hi, cb_hi, D5), K);
 
@@ -86,6 +80,29 @@ static inline void color_matrix_neon_8( const uint8x8_t y8,
     *r8 = vqmovun_s16(r16);
     *g8 = vqmovun_s16(g16);
     *b8 = vqmovun_s16(b16);
+}
+
+static inline void color_matrix_neon_16( const uint8x16_t y16,
+                                         const uint8x16_t cb16,
+                                         const uint8x16_t cr16,
+                                         uint8x16_t *r16,
+                                         uint8x16_t *g16,
+                                         uint8x16_t *b16)
+{
+    uint8x8_t y_lo = vget_low_u8(y16);
+    uint8x8_t y_hi = vget_high_u8(y16);
+    uint8x8_t cb_lo = vget_low_u8(cb16);
+    uint8x8_t cb_hi = vget_high_u8(cb16);
+    uint8x8_t cr_lo = vget_low_u8(cr16);
+    uint8x8_t cr_hi = vget_high_u8(cr16);
+
+    uint8x8_t r_lo, g_lo, b_lo, r_hi, g_hi, b_hi;
+    color_matrix_neon_8(y_lo, cb_lo, cr_lo, &r_lo, &g_lo, &b_lo);
+    color_matrix_neon_8(y_hi, cb_hi, cr_hi, &r_hi, &g_hi, &b_hi);
+
+    *r16 = vcombine_u8(r_lo, r_hi);
+    *g16 = vcombine_u8(g_lo, g_hi);
+    *b16 = vcombine_u8(b_lo, b_hi);
 }
 
 // Thin pointer-based wrapper, kept so any other caller (e.g. the older
@@ -539,33 +556,26 @@ static void CSC_YCC_to_RGB_neon_fused( void)
             uint8x8_t cb8 = vld1_u8(&Cb[crow][col]);
             uint8x8_t cr8 = vld1_u8(&Cr[crow][col]);
 
-            // Duplicate each chroma lane -> 16 replicated bytes,
-            // matching one 8-wide luma block exactly (each chroma
-            // sample covers 2 adjacent luma columns).
             uint8x8x2_t cbz = vzip_u8(cb8, cb8);
             uint8x8x2_t crz = vzip_u8(cr8, cr8);
             uint8x16_t cb16 = vcombine_u8(cbz.val[0], cbz.val[1]);
             uint8x16_t cr16 = vcombine_u8(crz.val[0], crz.val[1]);
-            uint8x8_t cb_lo = vget_low_u8(cb16), cb_hi = vget_high_u8(cb16);
-            uint8x8_t cr_lo = vget_low_u8(cr16), cr_hi = vget_high_u8(cr16);
 
-            uint8x8_t y0_lo = vld1_u8(&Y[row][lcol]);
-            uint8x8_t y0_hi = vld1_u8(&Y[row][lcol + 8]);
-            uint8x8_t y1_lo = vld1_u8(&Y[row + 1][lcol]);
-            uint8x8_t y1_hi = vld1_u8(&Y[row + 1][lcol + 8]);
+            uint8x16_t y0 = vcombine_u8(vld1_u8(&Y[row][lcol]), vld1_u8(&Y[row][lcol + 8]));
+            uint8x16_t y1 = vcombine_u8(vld1_u8(&Y[row + 1][lcol]), vld1_u8(&Y[row + 1][lcol + 8]));
 
-            uint8x8_t r,g,b;
-            color_matrix_neon_8(y0_lo, cb_lo, cr_lo, &r,&g,&b);
-            vst1_u8(&R[row][lcol], r); vst1_u8(&G[row][lcol], g); vst1_u8(&B[row][lcol], b);
+            uint8x16_t r0, g0, b0;
+            uint8x16_t r1, g1, b1;
+            color_matrix_neon_16(y0, cb16, cr16, &r0, &g0, &b0);
+            color_matrix_neon_16(y1, cb16, cr16, &r1, &g1, &b1);
 
-            color_matrix_neon_8(y0_hi, cb_hi, cr_hi, &r,&g,&b);
-            vst1_u8(&R[row][lcol+8], r); vst1_u8(&G[row][lcol+8], g); vst1_u8(&B[row][lcol+8], b);
+            vst1q_u8(&R[row][lcol], r0);
+            vst1q_u8(&G[row][lcol], g0);
+            vst1q_u8(&B[row][lcol], b0);
 
-            color_matrix_neon_8(y1_lo, cb_lo, cr_lo, &r,&g,&b);
-            vst1_u8(&R[row+1][lcol], r); vst1_u8(&G[row+1][lcol], g); vst1_u8(&B[row+1][lcol], b);
-
-            color_matrix_neon_8(y1_hi, cb_hi, cr_hi, &r,&g,&b);
-            vst1_u8(&R[row+1][lcol+8], r); vst1_u8(&G[row+1][lcol+8], g); vst1_u8(&B[row+1][lcol+8], b);
+            vst1q_u8(&R[row + 1][lcol], r1);
+            vst1q_u8(&G[row + 1][lcol], g1);
+            vst1q_u8(&B[row + 1][lcol], b1);
         }
 
         // scalar tail: <8 chroma columns left, replicate mode (no neighbor)
