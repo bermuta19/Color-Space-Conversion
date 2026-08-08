@@ -19,7 +19,7 @@ static void chrominance_upsample(
     uint8_t *top, uint8_t *left, uint8_t *middle);
 static void chrominance_array_upsample( void);
 
-```c
+
 static void CSC_YCC_to_RGB_vectors(int row, int col)
 {
     /*
@@ -255,7 +255,7 @@ static void CSC_YCC_to_RGB_vectors(int row, int col)
         &B[row + 1][col],
         vqmovun_s16(b1_16));
 }
-```
+
 
 
 
