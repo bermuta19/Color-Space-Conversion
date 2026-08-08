@@ -19,85 +19,243 @@ static void chrominance_upsample(
     uint8_t *top, uint8_t *left, uint8_t *middle);
 static void chrominance_array_upsample( void);
 
-
-static void CSC_YCC_to_RGB_vectors( int row, int col)
+```c
+static void CSC_YCC_to_RGB_vectors(int row, int col)
 {
-  //----------------------------------------------------------------
-  // Load Y for both output rows -- full resolution, no chroma
-  // dependency here (mirrors RGB_to_YCC's Y computation being
-  // independent of chroma_mode).
-  //----------------------------------------------------------------
-  uint8x8_t y_row0 = vld1_u8(&Y[row][col]);
-  uint8x8_t y_row1 = vld1_u8(&Y[row + 1][col]);
+    /*
+     * Process:
+     *
+     *   2 rows x 8 pixels
+     *
+     * Chroma is 4:2:0 and MODE 1, so each chroma sample is
+     * replicated horizontally and vertically.
+     *
+     * The important optimization here is that we keep Y/Cb/Cr
+     * as signed 16-bit values and use the ARMv7 widening
+     * multiply-accumulate instructions:
+     *
+     *     vmull_n_s16()
+     *     vmlal_n_s16()
+     *
+     * instead of explicitly widening everything to int32 first.
+     */
 
-  //----------------------------------------------------------------
-  // MODE 1: replicate -- the exact structural mirror of
-  // CSC_RGB_to_YCC_vectors' MODE 1 (drop). One chroma sample was
-  // kept per 2x2 block on encode, so it is replicated back into all
-  // 4 positions here, not averaged -- averaging would fabricate
-  // detail that was never actually encoded. Same replicated chroma
-  // vector serves BOTH output rows, so it's loaded once.
-  //----------------------------------------------------------------
-  uint8x8_t cb8 = vld1_u8(&Cb[row >> 1][col >> 1]);
-  uint8x8_t cr8 = vld1_u8(&Cr[row >> 1][col >> 1]);
-  uint8x8_t cb_rep = vzip_u8(cb8, cb8).val[0];
-  uint8x8_t cr_rep = vzip_u8(cr8, cr8).val[0];
+    // ------------------------------------------------------------
+    // Load Y for both rows.
+    // ------------------------------------------------------------
+    uint8x8_t y_row0 = vld1_u8(&Y[row][col]);
+    uint8x8_t y_row1 = vld1_u8(&Y[row + 1][col]);
 
-  //----------------------------------------------------------------
-  // Widen to 32-bit before the D1..D5 multiply-accumulate. Unlike
-  // the forward transform, this direction can genuinely overflow
-  // 8-bit RGB (see report Section 4.3 -- not every YCbCr triplet is
-  // a valid RGB triplet), so the accumulator must be wide enough for
-  // vqmovun_s16 to saturate correctly rather than silently wrap.
-  // This is the one place this function can't shrink to match
-  // RGB_to_YCC's 16-bit simplicity without reintroducing that bug.
-  //----------------------------------------------------------------
-  int16x8_t y0_16 = vsubq_s16(vreinterpretq_s16_u16(vmovl_u8(y_row0)), vdupq_n_s16(16));
-  int16x8_t y1_16 = vsubq_s16(vreinterpretq_s16_u16(vmovl_u8(y_row1)), vdupq_n_s16(16));
-  int16x8_t cb_16 = vsubq_s16(vreinterpretq_s16_u16(vmovl_u8(cb_rep)), vdupq_n_s16(128));
-  int16x8_t cr_16 = vsubq_s16(vreinterpretq_s16_u16(vmovl_u8(cr_rep)), vdupq_n_s16(128));
+    // ------------------------------------------------------------
+    // Load the 4 chroma samples needed for 8 output pixels.
+    //
+    // Cb/Cr layout:
+    //
+    //   C0 C1 C2 C3
+    //
+    // becomes:
+    //
+    //   C0 C0 C1 C1 C2 C2 C3 C3
+    //
+    // The same replicated chroma is used for both output rows.
+    // ------------------------------------------------------------
+    uint8x8_t cb_src = vld1_u8(&Cb[row >> 1][col >> 1]);
+    uint8x8_t cr_src = vld1_u8(&Cr[row >> 1][col >> 1]);
 
-  int32x4_t y0_lo = vmovl_s16(vget_low_s16(y0_16)),  y0_hi = vmovl_s16(vget_high_s16(y0_16));
-  int32x4_t y1_lo = vmovl_s16(vget_low_s16(y1_16)),  y1_hi = vmovl_s16(vget_high_s16(y1_16));
-  int32x4_t cb_lo = vmovl_s16(vget_low_s16(cb_16)),  cb_hi = vmovl_s16(vget_high_s16(cb_16));
-  int32x4_t cr_lo = vmovl_s16(vget_low_s16(cr_16)),  cr_hi = vmovl_s16(vget_high_s16(cr_16));
+    uint8x8_t cb_rep = vzip_u8(cb_src, cb_src).val[0];
+    uint8x8_t cr_rep = vzip_u8(cr_src, cr_src).val[0];
 
-  //----------------------------------------------------------------
-  // Row 0: R = D1*Y + D2*Cr ; G = D1*Y - D3*Cr - D4*Cb ; B = D1*Y + D5*Cb
-  //----------------------------------------------------------------
-  int32x4_t dy0_lo = vmulq_n_s32(y0_lo, D1), dy0_hi = vmulq_n_s32(y0_hi, D1);
+    // ------------------------------------------------------------
+    // Convert unsigned 8-bit values to signed 16-bit offsets.
+    //
+    // Y  = Y  - 16
+    // Cb = Cb - 128
+    // Cr = Cr - 128
+    // ------------------------------------------------------------
+    int16x8_t y0 = vsubq_s16(
+        vreinterpretq_s16_u16(vmovl_u8(y_row0)),
+        vdupq_n_s16(16));
 
-  int16x8_t r0 = vcombine_s16(vqmovn_s32(vrshrq_n_s32(vmlaq_n_s32(dy0_lo, cr_lo, D2), K)),
-                               vqmovn_s32(vrshrq_n_s32(vmlaq_n_s32(dy0_hi, cr_hi, D2), K)));
-  vst1_u8(&R[row][col], vqmovun_s16(r0));
+    int16x8_t y1 = vsubq_s16(
+        vreinterpretq_s16_u16(vmovl_u8(y_row1)),
+        vdupq_n_s16(16));
 
-  int16x8_t g0 = vcombine_s16(vqmovn_s32(vrshrq_n_s32(vmlsq_n_s32(vmlsq_n_s32(dy0_lo, cr_lo, D3), cb_lo, D4), K)),
-                               vqmovn_s32(vrshrq_n_s32(vmlsq_n_s32(vmlsq_n_s32(dy0_hi, cr_hi, D3), cb_hi, D4), K)));
-  vst1_u8(&G[row][col], vqmovun_s16(g0));
+    int16x8_t cb = vsubq_s16(
+        vreinterpretq_s16_u16(vmovl_u8(cb_rep)),
+        vdupq_n_s16(128));
 
-  int16x8_t b0 = vcombine_s16(vqmovn_s32(vrshrq_n_s32(vmlaq_n_s32(dy0_lo, cb_lo, D5), K)),
-                               vqmovn_s32(vrshrq_n_s32(vmlaq_n_s32(dy0_hi, cb_hi, D5), K)));
-  vst1_u8(&B[row][col], vqmovun_s16(b0));
+    int16x8_t cr = vsubq_s16(
+        vreinterpretq_s16_u16(vmovl_u8(cr_rep)),
+        vdupq_n_s16(128));
 
-  //----------------------------------------------------------------
-  // Row 1: identical (replicated) chroma, different Y -- same three
-  // lines again, mirroring how RGB_to_YCC repeats its Y block for row1.
-  //----------------------------------------------------------------
-  int32x4_t dy1_lo = vmulq_n_s32(y1_lo, D1), dy1_hi = vmulq_n_s32(y1_hi, D1);
 
-  int16x8_t r1 = vcombine_s16(vqmovn_s32(vrshrq_n_s32(vmlaq_n_s32(dy1_lo, cr_lo, D2), K)),
-                               vqmovn_s32(vrshrq_n_s32(vmlaq_n_s32(dy1_hi, cr_hi, D2), K)));
-  vst1_u8(&R[row + 1][col], vqmovun_s16(r1));
+    // ============================================================
+    // ROW 0
+    // ============================================================
 
-  int16x8_t g1 = vcombine_s16(vqmovn_s32(vrshrq_n_s32(vmlsq_n_s32(vmlsq_n_s32(dy1_lo, cr_lo, D3), cb_lo, D4), K)),
-                               vqmovn_s32(vrshrq_n_s32(vmlsq_n_s32(vmlsq_n_s32(dy1_hi, cr_hi, D3), cb_hi, D4), K)));
-  vst1_u8(&G[row + 1][col], vqmovun_s16(g1));
+    int16x4_t y0_lo  = vget_low_s16(y0);
+    int16x4_t y0_hi  = vget_high_s16(y0);
 
-  int16x8_t b1 = vcombine_s16(vqmovn_s32(vrshrq_n_s32(vmlaq_n_s32(dy1_lo, cb_lo, D5), K)),
-                               vqmovn_s32(vrshrq_n_s32(vmlaq_n_s32(dy1_hi, cb_hi, D5), K)));
-  vst1_u8(&B[row + 1][col], vqmovun_s16(b1));
+    int16x4_t cb_lo  = vget_low_s16(cb);
+    int16x4_t cb_hi  = vget_high_s16(cb);
 
+    int16x4_t cr_lo  = vget_low_s16(cr);
+    int16x4_t cr_hi  = vget_high_s16(cr);
+
+
+    // ------------------------------------------------------------
+    // R = D1*Y + D2*Cr
+    //
+    // Start with a widening multiply:
+    //
+    //   int16 x coefficient -> int32
+    //
+    // Then accumulate the second term directly into int32.
+    // ------------------------------------------------------------
+    int32x4_t r0_lo = vmull_n_s16(y0_lo, D1);
+    int32x4_t r0_hi = vmull_n_s16(y0_hi, D1);
+
+    r0_lo = vmlal_n_s16(r0_lo, cr_lo, D2);
+    r0_hi = vmlal_n_s16(r0_hi, cr_hi, D2);
+
+    // Round and shift.
+    r0_lo = vrshrq_n_s32(r0_lo, K);
+    r0_hi = vrshrq_n_s32(r0_hi, K);
+
+    // Saturate directly through int16 -> uint8.
+    int16x8_t r0_16 = vcombine_s16(
+        vqmovn_s32(r0_lo),
+        vqmovn_s32(r0_hi));
+
+    vst1_u8(
+        &R[row][col],
+        vqmovun_s16(r0_16));
+
+
+    // ------------------------------------------------------------
+    // G = D1*Y - D3*Cr - D4*Cb
+    //
+    // Again, start with a widening multiply and then perform
+    // widening multiply-subtract operations.
+    // ------------------------------------------------------------
+    int32x4_t g0_lo = vmull_n_s16(y0_lo, D1);
+    int32x4_t g0_hi = vmull_n_s16(y0_hi, D1);
+
+    g0_lo = vmlsl_n_s16(g0_lo, cr_lo, D3);
+    g0_hi = vmlsl_n_s16(g0_hi, cr_hi, D3);
+
+    g0_lo = vmlsl_n_s16(g0_lo, cb_lo, D4);
+    g0_hi = vmlsl_n_s16(g0_hi, cb_hi, D4);
+
+    // Round and shift.
+    g0_lo = vrshrq_n_s32(g0_lo, K);
+    g0_hi = vrshrq_n_s32(g0_hi, K);
+
+    int16x8_t g0_16 = vcombine_s16(
+        vqmovn_s32(g0_lo),
+        vqmovn_s32(g0_hi));
+
+    vst1_u8(
+        &G[row][col],
+        vqmovun_s16(g0_16));
+
+
+    // ------------------------------------------------------------
+    // B = D1*Y + D5*Cb
+    // ------------------------------------------------------------
+    int32x4_t b0_lo = vmull_n_s16(y0_lo, D1);
+    int32x4_t b0_hi = vmull_n_s16(y0_hi, D1);
+
+    b0_lo = vmlal_n_s16(b0_lo, cb_lo, D5);
+    b0_hi = vmlal_n_s16(b0_hi, cb_hi, D5);
+
+    // Round and shift.
+    b0_lo = vrshrq_n_s32(b0_lo, K);
+    b0_hi = vrshrq_n_s32(b0_hi, K);
+
+    int16x8_t b0_16 = vcombine_s16(
+        vqmovn_s32(b0_lo),
+        vqmovn_s32(b0_hi));
+
+    vst1_u8(
+        &B[row][col],
+        vqmovun_s16(b0_16));
+
+
+    // ============================================================
+    // ROW 1
+    // ============================================================
+
+    int16x4_t y1_lo = vget_low_s16(y1);
+    int16x4_t y1_hi = vget_high_s16(y1);
+
+
+    // ------------------------------------------------------------
+    // R = D1*Y + D2*Cr
+    // ------------------------------------------------------------
+    int32x4_t r1_lo = vmull_n_s16(y1_lo, D1);
+    int32x4_t r1_hi = vmull_n_s16(y1_hi, D1);
+
+    r1_lo = vmlal_n_s16(r1_lo, cr_lo, D2);
+    r1_hi = vmlal_n_s16(r1_hi, cr_hi, D2);
+
+    r1_lo = vrshrq_n_s32(r1_lo, K);
+    r1_hi = vrshrq_n_s32(r1_hi, K);
+
+    int16x8_t r1_16 = vcombine_s16(
+        vqmovn_s32(r1_lo),
+        vqmovn_s32(r1_hi));
+
+    vst1_u8(
+        &R[row + 1][col],
+        vqmovun_s16(r1_16));
+
+
+    // ------------------------------------------------------------
+    // G = D1*Y - D3*Cr - D4*Cb
+    // ------------------------------------------------------------
+    int32x4_t g1_lo = vmull_n_s16(y1_lo, D1);
+    int32x4_t g1_hi = vmull_n_s16(y1_hi, D1);
+
+    g1_lo = vmlsl_n_s16(g1_lo, cr_lo, D3);
+    g1_hi = vmlsl_n_s16(g1_hi, cr_hi, D3);
+
+    g1_lo = vmlsl_n_s16(g1_lo, cb_lo, D4);
+    g1_hi = vmlsl_n_s16(g1_hi, cb_hi, D4);
+
+    g1_lo = vrshrq_n_s32(g1_lo, K);
+    g1_hi = vrshrq_n_s32(g1_hi, K);
+
+    int16x8_t g1_16 = vcombine_s16(
+        vqmovn_s32(g1_lo),
+        vqmovn_s32(g1_hi));
+
+    vst1_u8(
+        &G[row + 1][col],
+        vqmovun_s16(g1_16));
+
+
+    // ------------------------------------------------------------
+    // B = D1*Y + D5*Cb
+    // ------------------------------------------------------------
+    int32x4_t b1_lo = vmull_n_s16(y1_lo, D1);
+    int32x4_t b1_hi = vmull_n_s16(y1_hi, D1);
+
+    b1_lo = vmlal_n_s16(b1_lo, cb_lo, D5);
+    b1_hi = vmlal_n_s16(b1_hi, cb_hi, D5);
+
+    b1_lo = vrshrq_n_s32(b1_lo, K);
+    b1_hi = vrshrq_n_s32(b1_hi, K);
+
+    int16x8_t b1_16 = vcombine_s16(
+        vqmovn_s32(b1_lo),
+        vqmovn_s32(b1_hi));
+
+    vst1_u8(
+        &B[row + 1][col],
+        vqmovun_s16(b1_16));
 }
+```
 
 
 
