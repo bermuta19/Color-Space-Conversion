@@ -22,6 +22,12 @@ static void chrominance_array_upsample( void);
 
 static void CSC_YCC_to_RGB_vectors(int row, int col)
 {
+  /*
+   * BARR C: uses fixed-size integer types
+   * (e.g. int16x8_t/int32x4_t via NEON intrinsics), functions are
+   * self-contained and avoid dynamic allocation which matches 
+   * BARR-C expectations.
+   */
     /*
      * Process:
      *
@@ -72,6 +78,9 @@ static void CSC_YCC_to_RGB_vectors(int row, int col)
     // Cb = Cb - 128
     // Cr = Cr - 128
     // ------------------------------------------------------------
+    /* BARR-C: widening and offset subtraction implemented with
+     fixed-size NEON types and constant-width operations;
+    */
     int16x8_t y0 = vsubq_s16(
         vreinterpretq_s16_u16(vmovl_u8(y_row0)),
         vdupq_n_s16(16));
@@ -117,6 +126,7 @@ static void CSC_YCC_to_RGB_vectors(int row, int col)
 
     r0_lo = vmlal_n_s16(r0_lo, cr_lo, D2);
     r0_hi = vmlal_n_s16(r0_hi, cr_hi, D2);
+
 
     // Round and shift.
     r0_lo = vrshrq_n_s32(r0_lo, K);

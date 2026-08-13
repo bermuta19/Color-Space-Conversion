@@ -27,10 +27,14 @@ static uint8_t chrominance_downsample(
     static void CSC_RGB_to_YCC_vectors( int row, int col, uint16x8_t y_base,
                                      uint16x8_t c_base, int chroma_mode)
 {
+      /*
+       * BARR C: uses fixed-size integer types
+       * (e.g. uint8_t, uint16x8_t), avoids dynamic memory and complex
+       * control flow constructs which aligns with many BARR-C recommendations.
+       */
   //----------------------------------------------------------------
   // Load + widen both rows (needed for Y regardless of chroma mode)
-  //----------------------------------------------------------------
-  uint8x8_t r_row0 = vld1_u8(&R[row][col]);
+  //----------------------------------------------------------------  uint8x8_t r_row0 = vld1_u8(&R[row][col]);
   uint8x8_t g_row0 = vld1_u8(&G[row][col]);
   uint8x8_t b_row0 = vld1_u8(&B[row][col]);
   uint16x8_t r0_16 = vmovl_u8(r_row0);
@@ -53,47 +57,12 @@ static uint8_t chrominance_downsample(
   y_row1 = vmlaq_n_u16(y_row1, g1_16, (uint16_t)C12);
   y_row1 = vmlaq_n_u16(y_row1, b1_16, (uint16_t)C13);
   vst1_u8(&Y[row + 1][col], vshrn_n_u16(y_row1, K));
-  /*
-  if (chroma_mode == 2)
-  {
-    //----------------------------------------------------------------
-    // MODE 2: box average. Sum R/G/B over the 2x2 block FIRST, then
-    // run the color-matrix multiply once instead of twice-then-average.
-    // Roughly halves the chroma MAC work vs computing Cb/Cr per row.
-    //----------------------------------------------------------------
-    uint16x8_t r_colsum = vaddq_u16(r0_16, r1_16);   // max 510, safe in u16
-    uint16x8_t g_colsum = vaddq_u16(g0_16, g1_16);
-    uint16x8_t b_colsum = vaddq_u16(b0_16, b1_16);
 
-    uint32x4_t r_block = vpaddlq_u16(r_colsum);      // sum of 4 pixels, max 1020
-    uint32x4_t g_block = vpaddlq_u16(g_colsum);
-    uint32x4_t b_block = vpaddlq_u16(b_colsum);
-
-    // 4 copies of the DC offset + rounding bias for a single (K+2)-bit shift
-    const uint32_t cbase4 = ((uint32_t)128 << K) * 4 + (1u << (K + 1));
-    uint32x4_t cbase4_vec = vdupq_n_u32(cbase4);
-
-    uint32x4_t cb32 = vmlaq_n_u32(cbase4_vec, b_block, (uint32_t)C23);
-    cb32 = vmlsq_n_u32(cb32, r_block, (uint32_t)C21);
-    cb32 = vmlsq_n_u32(cb32, g_block, (uint32_t)C22);
-    uint16x4_t cb16 = vshrn_n_u32(cb32, K + 2);       // rounded average, 0-255
-
-    uint32x4_t cr32 = vmlaq_n_u32(cbase4_vec, r_block, (uint32_t)C31);
-    cr32 = vmlsq_n_u32(cr32, g_block, (uint32_t)C32);
-    cr32 = vmlsq_n_u32(cr32, b_block, (uint32_t)C33);
-    uint16x4_t cr16 = vshrn_n_u32(cr32, K + 2);
-
-    uint8x8_t cb_cr_final = vmovn_u16(vcombine_u16(cb16, cr16));
-    vst1_lane_u32((uint32_t*)&Cb[row>>1][col>>1], vreinterpret_u32_u8(cb_cr_final), 0);
-    vst1_lane_u32((uint32_t*)&Cr[row>>1][col>>1], vreinterpret_u32_u8(cb_cr_final), 1);
-  }
-  else
-  {
-  */
     //----------------------------------------------------------------
     // MODE 1: drop. Keep only the top-left pixel of each 2x2 block;
     // row1's chroma is never computed at all.
     //----------------------------------------------------------------
+    // BARR-C: Uses constant-width operations with no dynamic memory
     uint16x8_t cb_row0 = vmlaq_n_u16(c_base, b0_16, (uint16_t)C23);
     cb_row0 = vmlsq_n_u16(cb_row0, r0_16, (uint16_t)C21);
     cb_row0 = vmlsq_n_u16(cb_row0, g0_16, (uint16_t)C22);
@@ -314,6 +283,9 @@ void CSC_RGB_to_YCC( void) {
 
   // expected, by hand calc: Cb = 55, Cr = 35 for all four
   //
+   /*
+       * BARR C: Loops
+       */
   for( row=0; row<IMAGE_ROW_SIZE; row+=2) {
       //printf( "\n[row,col] = [%02i,%02i]\n\n", row, col);
       switch (RGB_to_YCC_ROUTINE) {
