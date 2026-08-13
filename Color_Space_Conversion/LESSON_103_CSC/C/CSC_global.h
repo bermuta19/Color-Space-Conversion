@@ -15,6 +15,24 @@
 #ifndef CSC_FIXED_POINT_SHIFT
 #define CSC_FIXED_POINT_SHIFT K
 #endif
+#ifndef CSC_USE_NEON
+#define CSC_USE_NEON 1
+#endif
+#ifndef CSC_ENABLE_RGB_TO_YCC_OPTIMIZED
+#define CSC_ENABLE_RGB_TO_YCC_OPTIMIZED 1
+#endif
+#ifndef CSC_ENABLE_RGB_TO_YCC_NEON
+#define CSC_ENABLE_RGB_TO_YCC_NEON 1
+#endif
+#ifndef CSC_ENABLE_YCC_TO_RGB_OPTIMIZED
+#define CSC_ENABLE_YCC_TO_RGB_OPTIMIZED 1
+#endif
+#ifndef CSC_ENABLE_YCC_TO_RGB_NEON
+#define CSC_ENABLE_YCC_TO_RGB_NEON 1
+#endif
+#ifndef CSC_ENABLE_YCC_TO_RGB_ASM
+#define CSC_ENABLE_YCC_TO_RGB_ASM 1
+#endif
 #define CSC_ROUNDING (1u << (CSC_FIXED_POINT_SHIFT - 1))
 
 // RGB_to_YCC_ROUTINE
@@ -27,7 +45,8 @@
 //     1 for CSC_YCC_to_RGB_brute_force_float()
 //     2 for CSC_YCC_to_RGB_brute_force_int()
 //     3 for CSC_YCC_to_RGB_optimized()
-#define YCC_to_RGB_ROUTINE 3
+//     4 for CSC_YCC_to_RGB_neon()
+#define YCC_to_RGB_ROUTINE 4
 
 // CHROMINANCE_DOWNSAMPLING_MODE = 
 //     0 for returning zero (no chrominance)
@@ -39,7 +58,7 @@
 //     0 for returning zero (no chrominance)
 //     1 for replicating one pixel into three
 //     2 for interpolation with two pixels
-#define CHROMINANCE_UPSAMPLING_MODE 1
+#define CHROMINANCE_UPSAMPLING_MODE 2
 
 // RGB-to-YCC coefficients in 8-bit representation
 #define C11  66
@@ -53,11 +72,11 @@
 #define C33  18
 
 // YCC-to-RGB coefficients in 8-bit representation
-#define D1  74
-#define D2 102
-#define D3  52
-#define D4  25
-#define D5 129
+#define D1 298   // 1.164 * 256
+#define D2 409   // 1.596 * 256
+#define D3 208   // 0.813 * 256
+#define D4 100   // 0.391 * 256
+#define D5 516   // 2.018 * 256
 
 /* choose between definition (GLOBAL is defined)      *
  * and declaration (GLOBAL is undefined)              *
