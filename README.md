@@ -1,9 +1,17 @@
+PROGRAM ENVIRONMENT
+----------------------------------------------------------------------------------------------------------------------------
+This program was configured to run on the provided QEMU ARMHF32 32-bit VM running Debian Linux 13
+
+COMPILATION INSTRUCTIONS
+----------------------------------------------------------------------------------------------------------------------------
 Before compiling the program ensure that CSC_main.c CSC_RGB_to_YCC_01.c CSC_YCC_to_RGB_01.c are all present in the directory
 
 Use the following command to compile the program:
 
 gcc -O3 -std=c99 -march=armv7-a -mfpu=neon -mfloat-abi=hard CSC_main.c CSC_RGB_to_YCC_01.c CSC_YCC_to_RGB_01.c -lm -o csc_demo
 
+CONFIGURATIONS
+----------------------------------------------------------------------------------------------------------------------------
 The code is configured to run with image_input_RGB_640_480_02.data Ensure that the file is present in the same directory
 
 To use a different image the image name must be changed in CSC_main.c 
@@ -29,6 +37,9 @@ The possible values YCC_to_RGB_ROUTINE are:
 2 for brute force int implementation
 
 4 for optimized NEON implementation
+
+RUN INSTRUCTIONS
+----------------------------------------------------------------------------------------------------------------------------
 
 To run the program use the command 
 
