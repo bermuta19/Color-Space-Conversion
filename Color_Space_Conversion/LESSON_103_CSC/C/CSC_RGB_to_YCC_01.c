@@ -34,7 +34,8 @@ static uint8_t chrominance_downsample(
        */
   //----------------------------------------------------------------
   // Load + widen both rows (needed for Y regardless of chroma mode)
-  //----------------------------------------------------------------  uint8x8_t r_row0 = vld1_u8(&R[row][col]);
+  //----------------------------------------------------------------  
+  uint8x8_t r_row0 = vld1_u8(&R[row][col]);
   uint8x8_t g_row0 = vld1_u8(&G[row][col]);
   uint8x8_t b_row0 = vld1_u8(&B[row][col]);
   uint16x8_t r0_16 = vmovl_u8(r_row0);
