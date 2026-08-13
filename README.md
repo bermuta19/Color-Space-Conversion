@@ -17,13 +17,17 @@ The specific implementation can be changed in CSC_global.h by altering #define R
 The possible values RGB_to_YCC_ROUTINE are:
 
 1 for brute force float implementation
+
 2 for brute force int implementation
+
 3 for optimized NEON implementation
 
 The possible values YCC_to_RGB_ROUTINE are:
 
 1 for brute force float implementation
+
 2 for brute force int implementation
+
 4 for optimized NEON implementation
 
 To run the program use the command 
